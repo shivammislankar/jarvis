@@ -14,7 +14,9 @@ elif curl -sf -m 5 http://127.0.0.1:8081/health >/dev/null; then line ok brain "
 else line fail brain "no model is running (systemctl --user status jarvis-brain@dolphin)"; fi
 
 # Laptop: tunnel listening, and the laptop actually answers through it
-if ! ss -tln | grep -q '127.0.0.1:2222 '; then
+if [[ -z "$U" ]]; then
+  line fail laptop "JARVIS_LAPTOP_USER is not set in ~/jarvis/local.env"
+elif ! ss -tln | grep -q '127.0.0.1:2222 '; then
   line fail laptop "offline (no tunnel — laptop off, asleep or without internet)"
 elif out=$(timeout 15 ssh -o BatchMode=yes -o ConnectTimeout=8 -o IdentitiesOnly=yes -i ~/.ssh/laptop-ctl \
              -o HostKeyAlias=jarvis-laptop -p 2222 "$U@127.0.0.1" battery 2>/dev/null); then

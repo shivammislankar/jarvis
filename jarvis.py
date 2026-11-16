@@ -98,7 +98,8 @@ def ask_claude(text):
            "--tools", "",                                # chat only: no file/shell access
            "--system-prompt", SYSTEM]
     if st.get("session_id"): cmd += ["--resume", st["session_id"]]
-    p = subprocess.run(cmd + [text], cwd=cwd, capture_output=True, text=True, timeout=600)
+    # The message goes on stdin, never argv: text like "--tools=Bash" can only ever be text
+    p = subprocess.run(cmd, input=text, cwd=cwd, capture_output=True, text=True, timeout=600)
     try:
         out = json.loads(p.stdout)
     except json.JSONDecodeError:

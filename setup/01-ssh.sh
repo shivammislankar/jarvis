@@ -1,31 +1,28 @@
 #!/usr/bin/env bash
-# Phase 1 — the wire. Run:  sudo bash ~/jarvis/setup/01-ssh.sh
-# Step A (default): enable sshd with passwords TEMPORARILY so the phone can ssh-copy-id.
-# Step B:           sudo bash ~/jarvis/setup/01-ssh.sh lock   -> key-only, no root login.
+# Laptop SSH, locked down for Jarvis. Run once:  sudo bash ~/jarvis/setup/01-ssh.sh
+# The laptop's sshd only needs to accept the Jarvis reverse tunnel, which arrives on 127.0.0.1.
+# So: keys only, no passwords, no root, your user only, and it listens on 127.0.0.1 only —
+# unreachable from any Wi-Fi or LAN, even with the firewall off. Nobody gets a laptop shell
+# from the network; the server's key (added later) is further limited to bin/ctl-gate.
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "run with sudo"; exit 1; }
+U="${SUDO_USER:?run via sudo from your own account}"
 CONF=/etc/ssh/sshd_config.d/10-jarvis.conf
 
-if [[ "${1:-}" == "lock" ]]; then
-  U="${SUDO_USER:?run via sudo}"
-  [[ -s /home/$U/.ssh/authorized_keys ]] || { echo "no authorized_keys for $U yet — run ssh-copy-id from the phone first"; exit 1; }
-  cat > "$CONF" <<EOF
+dnf -y -q install openssh-server
+cat > "$CONF" <<EOF
+# Jarvis: sshd only for the reverse tunnel (which connects to 127.0.0.1)
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin no
 AllowUsers $U
+ListenAddress 127.0.0.1
 EOF
-  sshd -t && systemctl restart sshd
-  echo "sshd locked: key auth only, user $U only."
-  exit 0
-fi
-
-dnf -y install openssh-server
-cat > "$CONF" <<EOF
-PasswordAuthentication yes
-PermitRootLogin no
-EOF
-systemctl enable --now sshd
-firewall-cmd --permanent --add-service=ssh && firewall-cmd --reload
-echo "sshd up (password auth TEMPORARILY on). Now from Termux run phone/setup-termux.sh,"
-echo "then lock it:  sudo bash ~/jarvis/setup/01-ssh.sh lock"
+sshd -t
+systemctl enable sshd >/dev/null 2>&1
+systemctl restart sshd
+# Nothing outside needs port 22 on the laptop
+firewall-cmd -q --permanent --remove-service=ssh 2>/dev/null || true
+firewall-cmd -q --reload 2>/dev/null || true
+echo "sshd: keys only, user $U only, listening on 127.0.0.1 only:"
+ss -tln | awk '$4 ~ /:22$/ {print "  " $4}'

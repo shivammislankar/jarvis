@@ -53,11 +53,14 @@ Replace the placeholders as you go: `YOUR_SERVER_PUBLIC_IP`, `YOUR_LAPTOP_USER`,
 2. **Private network** — WireGuard `10.66.0.0/24`: server `10.66.0.1` (UDP 51820), laptop `10.66.0.2`
    (a NetworkManager WireGuard connection), phone `10.66.0.3` (WireGuard app, always-on, AllowedIPs
    `10.66.0.1/32`). Then close public SSH: allow only UDP 51820 in the cloud firewall and in firewalld.
-3. **Laptop** — put `bin/ctl`, `bin/apps.py`, `bin/ctl-gate` in `~/jarvis/bin`; install
-   `setup/systemd/jarvis-tunnel.service` as a user service; give the server its own key in
+3. **Laptop** — clone to `~/jarvis` (needs `bin/ctl`, `bin/apps.py`, `bin/ctl-gate`), then
+   `sudo bash setup/01-ssh.sh` (sshd: keys only, listening on 127.0.0.1 only — the tunnel's way in).
+   Install `setup/systemd/jarvis-tunnel.service` as a user service, and give the server its own key in
    `~/.ssh/authorized_keys` as `restrict,command="/home/YOUR_LAPTOP_USER/jarvis/bin/ctl-gate" ssh-ed25519 …`.
-4. **Phone** — in Termux: `bash setup-termux.sh`, `bash add-server.sh`, `bash add-widgets.sh`,
-   `bash add-health.sh`.
+4. **Phone** — in Termux: `bash setup-termux.sh` (prints the phone's public key) → on the laptop
+   `bash setup/add-phone-key.sh '<that key>'` (authorises it on the **server only**) → turn on the
+   WireGuard tunnel → `bash add-server.sh`, `bash add-widgets.sh`, `bash add-health.sh`.
+   The phone never gets SSH access to the laptop; use a strong screen lock on it.
 
 After a code change on the laptop: `git commit` → `bash setup/deploy-server.sh`.
 

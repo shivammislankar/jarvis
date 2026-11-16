@@ -9,8 +9,15 @@ shell. ctl itself only accepts its fixed action list.
 import os, shlex, sys
 
 CTL = os.path.join(os.path.dirname(os.path.realpath(__file__)), "ctl")
+import base64, json
+req = os.environ.get("SSH_ORIGINAL_COMMAND", "")
 try:
-    args = shlex.split(os.environ.get("SSH_ORIGINAL_COMMAND", ""))
-except ValueError as e:
+    if req.startswith("b64json "):          # from bin/ctl-server: exact argument list, no quoting games
+        args = json.loads(base64.b64decode(req[8:], validate=True))
+        if not (isinstance(args, list) and all(isinstance(a, str) for a in args)):
+            raise ValueError("not a list of strings")
+    else:                                    # plain words, e.g. bin/health's "battery"
+        args = shlex.split(req)
+except (ValueError, json.JSONDecodeError) as e:
     sys.exit(f"ctl-gate: bad request ({e})")
 os.execv(CTL, [CTL] + args)        # argv list: no shell, so no injection
