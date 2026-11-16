@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Jarvis phone client.  Two SSH host aliases in ~/.ssh/config:
+# Jarvis phone client.  One SSH host alias in ~/.ssh/config:
 #   jarvis = Oracle server: AI brains + voice, and it relays laptop actions to the laptop
-#   laptop = the laptop's own terminal, reached by jumping through the server (j sh)
+#   (the phone has no shell access to the laptop: a lost phone can't open a laptop terminal)
 # Everything works from anywhere (Wi-Fi or mobile data) as long as the laptop is on.
 #   j "hello"            chat (d: dolphin, q: qwen, c: claude)     j      interactive chat
 #   j -v [secs]          voice, one command: speak, press Enter (or fixed secs) → laptop acts / replies
@@ -13,7 +13,7 @@
 #   j remind "at 6 pm to call mom" | j reminders | j unremind N   → rings via the phone's Clock app
 #   j brief              morning brief (also arrives ~8 AM as a notification with "Read aloud")
 #   j health             server, brain, laptop tunnel, disk, memory (background checks: add-health.sh)
-#   j sh                 full terminal on the laptop      j srv   terminal on the server
+#   j srv                terminal on the server
 #   j help               list laptop actions
 # Voice needs the Termux:API app + `pkg install termux-api`. Speech is recognised offline on the server.
 # Spoken replies use Android's text-to-speech; set JARVIS_TTS=0 to turn them off.
@@ -141,7 +141,8 @@ voice_once() {   # record → server → act/speak. Returns 2 when you said good
 
 case "${1:-}" in
   "")   ssh -t -o ConnectTimeout=8 "$BRAIN" '~/jarvis/jarvis.py' ;;
-  sh)   ssh -t -o ConnectTimeout=8 laptop ;;
+  sh)   echo "j sh was removed for security: the phone has no shell access to the laptop."
+        echo "Laptop actions still work (j status, j app …); for a terminal use the laptop itself." ;;
   srv)  ssh -t -o ConnectTimeout=8 "$BRAIN" ;;
   -v)   voice_once "${2:-}" ;;
   talk) echo "Voice mode — say \"goodbye\" to stop (Ctrl-C to quit)."
