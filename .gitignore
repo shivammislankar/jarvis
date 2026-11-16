@@ -1,0 +1,15 @@
+# Large downloads — setup/02-brains.sh fetches them again
+models/
+bin/llamafile
+bin/whisperfile
+bin/transcribefile
+*.part
+
+# Per-machine settings and generated files
+local.env
+setup/*.log
+__pycache__/
+*.pyc
+
+# Personal values for setup/make-public.sh (never commit)
+.public-scrub

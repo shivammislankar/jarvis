@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+"""Forced command for the Jarvis server's SSH key on this laptop.
+
+The server's key is installed in ~/.ssh/authorized_keys as
+    restrict,command="/home/<you>/jarvis/bin/ctl-gate" ssh-ed25519 …
+so whatever the server asks to run, only `ctl <args>` is executed — never a
+shell. ctl itself only accepts its fixed action list.
+"""
+import os, shlex, sys
+
+CTL = os.path.join(os.path.dirname(os.path.realpath(__file__)), "ctl")
+try:
+    args = shlex.split(os.environ.get("SSH_ORIGINAL_COMMAND", ""))
+except ValueError as e:
+    sys.exit(f"ctl-gate: bad request ({e})")
+os.execv(CTL, [CTL] + args)        # argv list: no shell, so no injection

@@ -1,0 +1,9 @@
+[Unit]
+Description=Jarvis local brain (%i)
+
+[Service]
+ExecStart=%h/jarvis/bin/brain.sh %i
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

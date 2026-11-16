@@ -1,0 +1,176 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Jarvis phone client.  Two SSH host aliases in ~/.ssh/config:
+#   jarvis = Oracle server: AI brains + voice, and it relays laptop actions to the laptop
+#   laptop = the laptop's own terminal, reached by jumping through the server (j sh)
+# Everything works from anywhere (Wi-Fi or mobile data) as long as the laptop is on.
+#   j "hello"            chat (d: dolphin, q: qwen, c: claude)     j      interactive chat
+#   j -v [secs]          voice, one command: speak, press Enter (or fixed secs) → laptop acts / replies
+#   j talk [secs]        voice conversation: keeps listening until you say "goodbye"
+#   j app firefox | j close firefox | j apps | j lock | j vol 30 | j pause | j shot | j open youtube.com | j say hi | j status
+#   j do "I'm going to sleep"   AI proposes laptop actions → shown → run ONLY if you answer y
+#                        (voice: "do …", "set up for …", "get ready for …")
+#   j note "…" | j notes [word] | j forget N         notes kept on the server
+#   j remind "at 6 pm to call mom" | j reminders | j unremind N   → rings via the phone's Clock app
+#   j brief              morning brief (also arrives ~8 AM as a notification with "Read aloud")
+#   j health             server, brain, laptop tunnel, disk, memory (background checks: add-health.sh)
+#   j sh                 full terminal on the laptop      j srv   terminal on the server
+#   j help               list laptop actions
+# Voice needs the Termux:API app + `pkg install termux-api`. Speech is recognised offline on the server.
+# Spoken replies use Android's text-to-speech; set JARVIS_TTS=0 to turn them off.
+BRAIN="${JARVIS_BRAIN:-jarvis}"   # chat + voice
+PC="${JARVIS_PC:-jarvis}"         # laptop actions (the server relays them to the laptop)
+ACTIONS=" status st battery bat app launch start apps close quit lock vol volume mute media m play pause next prev shot screenshot open say notify help "
+REC="${TMPDIR:-$PREFIX/tmp}/jarvis-voice.m4a"
+
+on() {   # on <host> <command…>; friendly message if it can't be reached
+  local h="$1"; shift
+  ssh -o ConnectTimeout=8 "$h" "$@"; local rc=$?
+  if [[ $rc -eq 255 ]]; then
+    echo "[can't reach $h — check your internet connection]" >&2
+  fi
+  return $rc
+}
+q() { printf '%q ' "$@"; }   # quote args safely for the remote shell
+
+# Ctrl+C anywhere (e.g. while "listening…"): stop the microphone too — Android keeps
+# recording in the background otherwise — then quit cleanly.
+trap 'termux-microphone-record -q >/dev/null 2>&1; echo; echo "[cancelled]" >&2; exit 130' INT TERM
+
+shot() {
+  local f="$HOME/jarvis-shot.png"
+  on "$PC" '~/jarvis/bin/ctl shot --stdout' > "$f" && [[ -s "$f" ]] || { rm -f "$f"; return 1; }
+  echo "screenshot saved: $f"; termux-open "$f" 2>/dev/null || true
+}
+
+# Confirm-before-run: the server's planner only PROPOSES (validated against the action
+# allowlist). Nothing runs unless you answer y here; the default is No.
+run_plan() {   # $1 = plan JSON from ~/jarvis/bin/plan.py
+  local js="$1" show cmds n ans c
+  show="$(python3 -c 'import json,sys
+p = json.loads(sys.argv[1])
+print(p.get("reply") or "No plan.")
+for i, a in enumerate(p.get("actions", []), 1): print("  %d. %s" % (i, a["desc"]))
+for r in p.get("rejected", []): print("  (dropped, not allowed: %s)" % r)' "$js" 2>/dev/null)" \
+    || { echo "[the planner returned something unreadable — nothing was run]" >&2; return 1; }
+  cmds="$(python3 -c 'import json,sys,shlex
+for a in json.loads(sys.argv[1]).get("actions", []): print(" ".join(shlex.quote(x) for x in a["args"]))' "$js")"
+  echo "$show"; speak "$(head -1 <<<"$show")"
+  [[ -z "$cmds" ]] && return 0
+  n=$(wc -l <<<"$cmds")
+  if ! { exec 3</dev/tty; } 2>/dev/null; then     # e.g. a home-screen button: nobody to ask
+    echo "Not run."; return 0
+  fi
+  read -r -p "Run these $n action(s) on the laptop? [y/N] " ans <&3; exec 3<&-
+  [[ "$ans" =~ ^[Yy]([Ee][Ss])?$ ]] || { echo "Not run."; return 0; }
+  while IFS= read -r c; do      # ssh gets /dev/null so it can't swallow the list
+    if [[ "$c" == shot ]]; then shot </dev/null; else on "$PC" "~/jarvis/bin/ctl $c" </dev/null; fi
+  done <<<"$cmds"
+}
+
+# Reminders ring through the phone's own Clock app (works offline, no Google needed):
+# under an hour away → a countdown timer; later → an alarm. The server keeps the list;
+# reminders >24 h away get their alarm from the background check once they're near.
+MEMO='python3 ~/jarvis/bin/memo.py'
+set_alarm() {   # set_alarm <due epoch> <text>  → 0 if the Clock app accepted it
+  local due="$1" text="Jarvis: $2" left out
+  left=$(( due - $(date +%s) ))
+  (( left > 5 )) || return 1
+  if (( left < 3600 )); then
+    out="$(am start -a android.intent.action.SET_TIMER --ei android.intent.extra.alarm.LENGTH "$left" \
+           --es android.intent.extra.alarm.MESSAGE "$text" --ez android.intent.extra.alarm.SKIP_UI true 2>&1)"
+  else
+    out="$(am start -a android.intent.action.SET_ALARM \
+           --ei android.intent.extra.alarm.HOUR "$((10#$(date -d "@$due" +%H)))" \
+           --ei android.intent.extra.alarm.MINUTES "$((10#$(date -d "@$due" +%M)))" \
+           --es android.intent.extra.alarm.MESSAGE "$text" --ez android.intent.extra.alarm.SKIP_UI true 2>&1)"
+  fi
+  if grep -qiE 'error|exception|unable' <<<"$out"; then
+    echo "[couldn't set the phone alarm: $(head -1 <<<"$out")]" >&2; return 1
+  fi
+}
+alarm_for() {   # alarm_for <reminder JSON from memo.py remind add> — set + tell the server
+  local js="$1" id due text
+  read -r id due text < <(python3 -c 'import json,sys; r=json.loads(sys.argv[1]); print(r.get("id",""), r.get("due",0), r.get("text",""))' "$js")
+  [[ -n "$id" ]] || return 0
+  (( due - $(date +%s) < 86400 )) || { echo "(the phone alarm will be set automatically the day before)"; return 0; }
+  set_alarm "$due" "$text" && on "$BRAIN" "$MEMO remind ack $id" >/dev/null </dev/null && echo "⏰ alarm set on this phone"
+}
+sync_reminders() {   # set alarms for reminders that just came within 24 h (run by jarvis-health)
+  local js line id due text
+  js="$(on "$BRAIN" "$MEMO remind due" 2>/dev/null </dev/null)" || return 0
+  while IFS=$'\t' read -r id due text; do
+    [[ -n "$id" ]] && set_alarm "$due" "$text" && on "$BRAIN" "$MEMO remind ack $id" >/dev/null </dev/null
+  done < <(python3 -c 'import json,sys
+for r in json.loads(sys.argv[1]).get("items", []): print("%s\t%s\t%s" % (r["id"], r["due"], r["text"]))' "$js")
+}
+
+speak() { [[ "${JARVIS_TTS:-1}" == 1 && -n "$1" ]] && timeout 120 termux-tts-speak "$1" 2>/dev/null; }
+
+record() {   # $1 = seconds (optional). Empty = until Enter.
+  rm -f "$REC"
+  termux-microphone-record -q >/dev/null 2>&1          # stop any stale recording
+  if ! termux-microphone-record -f "$REC" -l "${1:-0}" >/dev/null 2>&1; then
+    echo "[can't use the microphone — install the Termux:API app and allow microphone access]" >&2; return 1
+  fi
+  if [[ -n "${1:-}" ]]; then
+    echo "🎙  listening for $1 s…"; sleep "$1"; sleep 0.5
+  else
+    read -r -p "🎙  listening… press Enter when done " _
+  fi
+  termux-microphone-record -q >/dev/null 2>&1; sleep 0.7  # let the file finish writing
+  [[ -s "$REC" ]] || { echo "[nothing was recorded]" >&2; return 1; }
+}
+
+voice_once() {   # record → server → act/speak. Returns 2 when you said goodbye.
+  record "${1:-}" || return 1
+  echo "…"
+  local out heard kind reply
+  out="$(on "$BRAIN" '~/jarvis/bin/voice' < "$REC")" || return 1
+  heard="$(sed -n 's/^heard: //p' <<<"$out" | head -1)"
+  kind="$(sed -n 's/^kind: //p' <<<"$out" | head -1)"
+  reply="$(sed '1,2d' <<<"$out" | grep -v '^remind: ')"
+  [[ -n "$heard" ]] && echo "› $heard"
+  [[ "$kind" == remind ]] && alarm_for "$(sed -n 's/^remind: //p' <<<"$out" | head -1)"
+  if [[ "$kind" == plan ]]; then run_plan "$(sed -n 's/^plan: //p' <<<"$out" | head -1)"; return 0; fi
+  [[ "$kind" == shot ]] && shot
+  echo "$reply"; speak "$reply"
+  [[ "$kind" == bye ]] && return 2
+  return 0
+}
+
+case "${1:-}" in
+  "")   ssh -t -o ConnectTimeout=8 "$BRAIN" '~/jarvis/jarvis.py' ;;
+  sh)   ssh -t -o ConnectTimeout=8 laptop ;;
+  srv)  ssh -t -o ConnectTimeout=8 "$BRAIN" ;;
+  -v)   voice_once "${2:-}" ;;
+  talk) echo "Voice mode — say \"goodbye\" to stop (Ctrl-C to quit)."
+        while :; do voice_once "${2:-}"; [[ $? -eq 2 ]] && break; echo; done ;;
+  shot|screenshot) shot ;;
+  note)      shift; on "$BRAIN" "$MEMO --text note add $(q "$*")" ;;
+  notes)     shift; on "$BRAIN" "$MEMO --text note list $(q "$*")" ;;
+  forget)    shift; on "$BRAIN" "$MEMO --text note del $(q "${1:-}")" ;;
+  remind)    shift; r="$(on "$BRAIN" "$MEMO remind add $(q "remind me $*")")" || exit 1
+             python3 -c 'import json,sys; print(json.loads(sys.argv[1])["reply"])' "$r"; alarm_for "$r" ;;
+  reminders) on "$BRAIN" "$MEMO --text remind list" ;;
+  unremind)  shift; on "$BRAIN" "$MEMO --text remind del $(q "${1:-}")" ;;
+  sync-reminders) sync_reminders ;;
+  brief)     b="$(on "$BRAIN" '~/jarvis/bin/brief' </dev/null)" || exit 1
+             case "${2:-}" in
+               --notify) termux-notification --id jarvis-brief --title "Jarvis morning brief" --content "$b" \
+                           --priority default --button1 "Read aloud" \
+                           --button1-action "$HOME/bin/j brief --speak" 2>/dev/null ;;
+               --speak)  JARVIS_TTS=1 speak "$b" ;;
+               *)        echo "$b"; speak "$b" ;;
+             esac ;;
+  health) on "$BRAIN" '~/jarvis/bin/health' | sed 's/^ok /✅ /; s/^fail /❌ /'
+          [[ -f ~/.cache/jarvis-health/checked ]] && echo "(background check last ran $(cat ~/.cache/jarvis-health/checked))" ;;
+  do)   shift; [[ $# -gt 0 ]] || { echo 'usage: j do "what you want done"' >&2; exit 2; }
+        echo "planning… (up to a minute on the server)"
+        js="$(on "$BRAIN" "python3 ~/jarvis/bin/plan.py $(q "$@")")" || exit 1
+        run_plan "$js" ;;
+  *)    if [[ "$ACTIONS" == *" $1 "* ]]; then
+          on "$PC" "~/jarvis/bin/ctl $(q "$@")"          # laptop action
+        else
+          printf '%s' "$*" | on "$BRAIN" '~/jarvis/jarvis.py -'   # chat
+        fi ;;
+esac

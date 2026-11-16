@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Jarvis server health — one line per check: "ok|fail <check> <detail>"
+# Used by the phone's background checker (phone/jarvis-health) and by `j health`.
+# Read-only: checks the laptop through the tunnel WITHOUT going through ctl (so it isn't logged
+# as an action); the laptop key's forced command still limits it to ctl actions.
+set -uo pipefail
+line() { printf '%s %s %s\n' "$1" "$2" "$3"; }
+[[ -f ~/jarvis/local.env ]] && . ~/jarvis/local.env
+U="${JARVIS_LAPTOP_USER:-}"
+
+# Brain: Dolphin (or Qwen, if you switched to it) answering on localhost
+if curl -sf -m 5 http://127.0.0.1:8080/health >/dev/null; then line ok brain "Dolphin up"
+elif curl -sf -m 5 http://127.0.0.1:8081/health >/dev/null; then line ok brain "Qwen up"
+else line fail brain "no model is running (systemctl --user status jarvis-brain@dolphin)"; fi
+
+# Laptop: tunnel listening, and the laptop actually answers through it
+if ! ss -tln | grep -q '127.0.0.1:2222 '; then
+  line fail laptop "offline (no tunnel — laptop off, asleep or without internet)"
+elif out=$(timeout 15 ssh -o BatchMode=yes -o ConnectTimeout=8 -o IdentitiesOnly=yes -i ~/.ssh/laptop-ctl \
+             -o HostKeyAlias=jarvis-laptop -p 2222 "$U@127.0.0.1" battery 2>/dev/null); then
+  line ok laptop "online, $out"
+else
+  line fail laptop "tunnel open but laptop not answering"
+fi
+
+# Disk and memory (memory = what's still available for new work)
+disk=$(df --output=pcent / | tail -1 | tr -dc 0-9)
+(( disk < 90 )) && line ok disk "${disk}% used" || line fail disk "${disk}% used — nearly full"
+avail=$(awk '/MemAvailable/{a=$2} /MemTotal/{t=$2} END{printf "%d", 100*a/t}' /proc/meminfo)
+(( avail > 8 )) && line ok memory "${avail}% available" || line fail memory "only ${avail}% available"

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Jarvis server: laptop actions are forwarded to the laptop through its reverse tunnel
+# (laptop runs jarvis-tunnel.service → server 127.0.0.1:2222 → laptop sshd).
+# The key ~/.ssh/laptop-ctl is restricted on the laptop to bin/ctl-gate, i.e. ctl actions only.
+[[ -f ~/jarvis/local.env ]] && . ~/jarvis/local.env
+U="${JARVIS_LAPTOP_USER:?set JARVIS_LAPTOP_USER=<your laptop username> in ~/jarvis/local.env}"
+LOG=~/.local/state/jarvis/actions.log; mkdir -p "${LOG%/*}"
+printf '%s %s\n' "$(date '+%F %T')" "$(printf '%q ' "$@")" >> "$LOG"     # audit trail of every laptop action
+ssh -o BatchMode=yes -o ConnectTimeout=5 -o IdentitiesOnly=yes -i ~/.ssh/laptop-ctl \
+    -o HostKeyAlias=jarvis-laptop -p 2222 "$U@127.0.0.1" -- "$(printf '%q ' "$@")"
+rc=$?
+if [[ $rc -eq 255 ]]; then
+  echo "ctl: laptop is offline (it's off, asleep, or has no internet) — try again when it's on" >&2
+fi
+exit $rc

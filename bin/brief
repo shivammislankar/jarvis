@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""Jarvis morning brief — plain sentences, ready to show or read aloud.
+Built from local data only (reminders from memo.py, status from bin/health); nothing leaves the server.
+"""
+import json, subprocess
+from datetime import datetime, timedelta
+from pathlib import Path
+
+J = Path(__file__).resolve().parent.parent
+now = datetime.now()
+part = "morning" if now.hour < 12 else "afternoon" if now.hour < 17 else "evening"
+lines = [f"Good {part}. It's {now.strftime('%A, %-d %B')}."]
+
+# Reminders: today in full, the rest of the week as a count
+try:
+    items = json.loads(subprocess.run(["python3", str(J / "bin/memo.py"), "remind", "list"],
+                                      capture_output=True, text=True, timeout=20).stdout)["items"]
+except Exception:
+    items = None
+if items is None:
+    lines.append("I couldn't read your reminders.")
+else:
+    end_today = now.replace(hour=23, minute=59, second=59)
+    today = [r for r in items if datetime.fromtimestamp(r["due"]) <= end_today]
+    week = [r for r in items if end_today < datetime.fromtimestamp(r["due"]) <= end_today + timedelta(days=6)]
+    if today:
+        lines.append("Today: " + "; ".join(
+            f"{datetime.fromtimestamp(r['due']).strftime('%-I:%M %p')} {r['text']}" for r in today) + ".")
+    else:
+        lines.append("No reminders today.")
+    if week:
+        lines.append(f"{len(week)} more this week, next: {week[0]['text']} on "
+                     f"{datetime.fromtimestamp(week[0]['due']).strftime('%A')}.")
+
+# Jarvis status: one line if all is well, details only for problems
+try:
+    out = subprocess.run([str(J / "bin/health")], capture_output=True, text=True, timeout=60).stdout.splitlines()
+except Exception:
+    out = []
+fails = [l.split(" ", 2) for l in out if l.startswith("fail ")]
+laptop = next((l.split(" ", 2)[2] for l in out if l.startswith("ok laptop ")), "")
+if not out:
+    lines.append("I couldn't check Jarvis's health.")
+elif not fails:
+    lines.append("Jarvis is healthy" + (f"; laptop {laptop.removeprefix('online, ')}." if laptop else "."))
+else:
+    lines.append("Needs attention: " + "; ".join(f"{f[1]} {f[2]}" for f in fails) + ".")
+
+print("\n".join(lines))

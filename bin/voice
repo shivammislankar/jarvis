@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Jarvis voice: audio in (stdin, any format) → offline Whisper → laptop action or chat → reply.
+#   ssh hub ~/jarvis/bin/voice < recording.m4a
+#   voice --text "open firefox"          (skip speech recognition; for testing)
+# Output (for the phone):
+#   heard: <what Whisper heard>
+#   kind:  action | chat | shot | bye | none
+#   <reply text, possibly several lines>
+set -uo pipefail
+J="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+# Per-machine settings (optional): ~/jarvis/local.env, e.g. on the 2-CPU server:
+#   JARVIS_STT_MODEL=tiny.en-q5_1
+[[ -f "$J/local.env" ]] && . "$J/local.env"
+MODEL="$J/models/ggml-${JARVIS_STT_MODEL:-small.en-q5_1}.bin"
+THREADS="$(nproc)"; (( THREADS > 8 )) && THREADS=8
+# Vocabulary hint: small Whisper models get Jarvis commands right with it ("mattery" → "battery").
+HINT="Jarvis voice commands: open Firefox, close the text editor, set the volume to 30 percent, what is the battery, take a screenshot, lock the laptop, pause, next song. Questions about Kerala, India."
+TMP="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/jarvis-voice.XXXXXX")"; trap 'rm -rf "$TMP"' EXIT
+
+if [[ "${1:-}" == "--text" ]]; then
+  shift; said="$*"
+else
+  [[ -f "$MODEL" ]] || { echo "heard: "; echo "kind: none"; echo "Speech model is not installed yet."; exit 0; }
+  cat > "$TMP/in"
+  [[ -s "$TMP/in" ]] || { echo "heard: "; echo "kind: none"; echo "No audio received."; exit 0; }
+  # 16 kHz mono WAV, with leading/trailing silence trimmed (pause before you speak, before Enter)
+  TRIM="silenceremove=start_periods=1:start_threshold=-50dB:start_silence=0.2,areverse,silenceremove=start_periods=1:start_threshold=-50dB:start_silence=0.3,areverse"
+  if ! ffmpeg -nostdin -loglevel error -i "$TMP/in" -af "$TRIM" -ar 16000 -ac 1 -c:a pcm_s16le "$TMP/in.wav" 2>"$TMP/ff.err"; then
+    echo "heard: "; echo "kind: none"; echo "Couldn't read the recording: $(head -c 200 "$TMP/ff.err")"; exit 0
+  fi
+  dur="$(( ($(stat -c %s "$TMP/in.wav") - 44) * 1000 / 32000 ))"   # ms: 16 kHz × 16-bit mono WAV
+  if (( dur < 300 )); then
+    echo "heard: "; echo "kind: none"; echo "I didn't hear anything."; exit 0
+  fi
+  # Whisper always encodes a 30 s window; shrinking it to the clip length is ~3x faster for commands.
+  # (Below 512 accuracy drops: "what's the battery" became "what's the matter in".)
+  actx=$(( dur / 20 + 128 )); (( actx < 512 )) && actx=512; (( actx > 1500 )) && actx=1500
+  # Prefer Fedora's whisper.cpp (uses AVX2); fall back to the bundled whisperfile. CPU only: GPU holds the LLM.
+  STT="$(command -v whisper-cli || command -v whisper-cpp || echo "$J/bin/whisperfile")"
+  said="$("$STT" -ng -m "$MODEL" -f "$TMP/in.wav" -l en -nt -np -t "$THREADS" -ac "$actx" --prompt "$HINT" 2>/dev/null \
+          | sed -E 's/\[[^]]*\]//g; s/\([^)]*\)//g' | tr '\n' ' ' | sed -E 's/^ +| +$//g; s/ +/ /g')"
+fi
+
+echo "heard: $said"
+if [[ -z "$said" ]]; then echo "kind: none"; echo "I didn't catch that."; exit 0; fi
+
+intent="$(python3 "$J/bin/intent.py" "$said")"
+kind="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["kind"])' "$intent")"
+echo "kind: $kind"
+case "$kind" in
+  action) mapfile -t args < <(python3 -c 'import json,sys; print("\n".join(json.loads(sys.argv[1])["args"]))' "$intent")
+          "$J/bin/ctl" "${args[@]}" 2>&1 | sed 's/^ctl: //' ;;
+  chat)   python3 -c 'import json,sys; print(json.loads(sys.argv[1])["text"])' "$intent" \
+            | python3 "$J/jarvis.py" - 2>&1 | sed 's/^\[error\] /Sorry, /' ;;
+  plan)   # PROPOSE only — the phone shows the list and runs it only if you answer y
+          python3 -c 'import json,sys; print(json.loads(sys.argv[1])["text"])' "$intent" \
+            | python3 "$J/bin/plan.py" | sed 's/^/plan: /' ;;
+  note)   python3 -c 'import json,sys; print(json.loads(sys.argv[1])["text"])' "$intent" \
+            | xargs -0 python3 "$J/bin/memo.py" --text note add ;;
+  notes)  echo "You asked me to remember:"; python3 "$J/bin/memo.py" --text note list ;;
+  remind) r="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["text"])' "$intent" \
+               | xargs -0 python3 "$J/bin/memo.py" remind add)"
+          echo "remind: $r"                                      # phone sets the alarm from this
+          python3 -c 'import json,sys; print(json.loads(sys.argv[1])["reply"])' "$r" ;;
+  reminders) python3 "$J/bin/memo.py" --text remind list ;;
+  brief)  "$J/bin/brief" ;;
+  shot)   echo "Taking a screenshot." ;;
+  bye)    echo "Goodbye." ;;
+esac

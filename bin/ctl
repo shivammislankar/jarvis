@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# Jarvis laptop control — a fixed allowlist of actions, safe to call over SSH from the phone.
+# Usage: ctl <action> [args]     (ctl help for the list)
+# Runs inside your GNOME session's D-Bus / PipeWire, so it works from SSH without a desktop.
+set -euo pipefail
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-GNOME}"   # SSH lacks these; apps need them to be listed
+export XDG_DATA_DIRS="${XDG_DATA_DIRS:-$HOME/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share}"
+STATE="$HOME/.local/state/jarvis"; mkdir -p "$STATE"
+J="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+
+die() { echo "ctl: $*" >&2; exit 1; }
+gcall() { gdbus call --session "$@" >/dev/null; }
+
+battery() {
+  local b; b="$(upower -e | grep -m1 -i battery_)" || { echo "no battery"; return; }
+  upower -i "$b" | awk -F': *' '/percentage/{p=$2} /state/{s=$2} /time to/{t=$2}
+    END{printf "battery %s, %s%s\n", p, s, (t? " ("t")":"")}'
+}
+
+players() { busctl --user list --no-legend 2>/dev/null | awk '{print $1}' | grep '^org\.mpris\.MediaPlayer2\.' || true; }
+
+media() {
+  local m
+  case "${1:-toggle}" in
+    toggle|pp) m=PlayPause ;; play) m=Play ;; pause) m=Pause ;;
+    next) m=Next ;; prev|previous) m=Previous ;; stop) m=Stop ;;
+    *) die "media play|pause|toggle|next|prev|stop" ;;
+  esac
+  local ps; ps="$(players)"; [[ -n "$ps" ]] || { echo "nothing is playing (no media player open)"; return; }
+  for p in $ps; do gcall --dest "$p" --object-path /org/mpris/MediaPlayer2 --method "org.mpris.MediaPlayer2.Player.$m" || true; done
+  echo "media: $m"
+}
+
+vol() {
+  local S=@DEFAULT_AUDIO_SINK@
+  case "${1:-}" in
+    "")        ;;
+    up)        wpctl set-volume -l 1.0 $S 10%+ ;;
+    down)      wpctl set-volume $S 10%- ;;
+    mute)      wpctl set-mute $S 1 ;;
+    unmute)    wpctl set-mute $S 0 ;;
+    [0-9]|[0-9][0-9]|100) wpctl set-mute $S 0; wpctl set-volume $S "$1%" ;;
+    *) die "vol [0-100|up|down|mute|unmute]" ;;
+  esac
+  wpctl get-volume $S | awk '{printf "volume %d%%%s\n", $2*100+0.5, ($3? " (muted)":"")}'
+}
+
+shot() {   # screenshot via the desktop portal; prints PNG to stdout with --stdout
+  local uri f
+  uri="$(python3 - <<'PY'
+import gi; gi.require_version('Gio','2.0'); from gi.repository import Gio, GLib
+bus = Gio.bus_get_sync(Gio.BusType.SESSION); loop = GLib.MainLoop(); out = {}
+tok = "jarvis%d" % GLib.random_int()
+path = "/org/freedesktop/portal/desktop/request/%s/%s" % (bus.get_unique_name()[1:].replace('.', '_'), tok)
+def resp(c, s, p, i, sig, params):
+    code, res = params.unpack(); out['uri'] = res.get('uri', '') if code == 0 else ''; loop.quit()
+bus.signal_subscribe(None, "org.freedesktop.portal.Request", "Response", path, None, 0, resp)
+bus.call_sync("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+    "org.freedesktop.portal.Screenshot", "Screenshot",
+    GLib.Variant("(sa{sv})", ("", {"handle_token": GLib.Variant('s', tok), "interactive": GLib.Variant('b', False)})),
+    None, 0, -1, None)
+GLib.timeout_add_seconds(15, loop.quit); loop.run()
+print(out.get('uri', ''))
+PY
+)"
+  [[ "$uri" == file://* ]] || die "screenshot failed (screen locked, or a permission prompt is open on the laptop)"
+  f="$(python3 -c 'import sys,urllib.parse as u; print(u.unquote(u.urlparse(sys.argv[1]).path))' "$uri")"
+  mv -f "$f" "$STATE/shot.png"                       # keep ~/Pictures clean
+  if [[ "${1:-}" == "--stdout" ]]; then cat "$STATE/shot.png"; else echo "$STATE/shot.png"; fi
+}
+
+open_url() {
+  local u="${1:-}"
+  [[ "$u" =~ ^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(/.*)?$ ]] && u="https://$u"   # youtube.com → https://youtube.com
+  [[ "$u" =~ ^https?:// ]] || die "open only takes a web address, e.g. ctl open youtube.com"
+  setsid -f gio open "$u" >/dev/null 2>&1; echo "opened $u"
+}
+
+launch_app() {   # open an installed app as if clicked in GNOME (own systemd scope, outlives SSH)
+  [[ $# -gt 0 ]] || die "app <name>   (j apps lists them)"
+  local out file name
+  out="$(python3 "$J/bin/apps.py" find "$@")" || exit 1
+  file="$(sed -n 1p <<<"$out")"; name="$(sed -n 2p <<<"$out")"
+  local id; id="$(basename "$file" .desktop)"
+  systemd-run --user --quiet --collect -p ExitType=cgroup \
+    --unit="app-jarvis-${id//[^A-Za-z0-9_.-]/_}-$RANDOM" \
+    gio launch "$file"
+  echo "opened $name"
+}
+
+status() {
+  echo "$(hostname): up $(uptime -p | sed 's/^up //')"
+  battery
+  vol
+  echo "screen: $(gdbus call --session --dest org.gnome.ScreenSaver --object-path /org/gnome/ScreenSaver \
+        --method org.gnome.ScreenSaver.GetActive 2>/dev/null | grep -q true && echo locked/off || echo on)"
+  df -h --output=avail "$HOME" | tail -1 | awk '{print "disk free: "$1}'
+  python3 "$J/jarvis.py" /status
+}
+
+case "${1:-help}" in
+  lock)        gcall --dest org.gnome.ScreenSaver --object-path /org/gnome/ScreenSaver --method org.gnome.ScreenSaver.Lock; echo "locked" ;;
+  vol|volume)  shift; vol "$@" ;;
+  mute)        vol mute ;;
+  media|m)     shift; media "$@" ;;
+  play|pause|next|prev) media "$1" ;;
+  shot|screenshot) shift; shot "$@" ;;
+  open)        shift; open_url "$@" ;;
+  app|launch|start) shift; launch_app "$@" ;;
+  apps)        python3 "$J/bin/apps.py" list ;;
+  close|quit)  shift; [[ $# -gt 0 ]] || die "close <app> [force]"; python3 "$J/bin/apps.py" close "$@" ;;
+  say|notify)  shift; [[ $# -gt 0 ]] || die "say <message>"; notify-send -a Jarvis "📱 Phone" "$*"; echo "shown on laptop" ;;
+  battery|bat) battery ;;
+  status|st)   status ;;
+  help|*)      cat <<'EOF'
+laptop actions:
+  status            uptime, battery, volume, screen, disk, brains
+  battery           charge level
+  lock              lock the screen
+  vol [N|up|down|mute|unmute]   get/set volume (0-100)
+  play|pause|next|prev          control whatever media is playing
+  shot              screenshot (phone: opens it)
+  app <name>        open an application  (e.g. app firefox, app vscode, app files)
+  apps              list applications you can open
+  close <name>      close an app normally (unsaved-work prompts still appear on the laptop)
+  close <name> force   kill a frozen app
+  open <site>       open a website on the laptop  (e.g. open youtube.com)
+  say <text>        pop up a notification on the laptop
+EOF
+  [[ "${1:-help}" == help ]] || exit 2 ;;
+esac

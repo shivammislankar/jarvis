@@ -1,0 +1,54 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Jarvis health watcher — run every 30 min by termux-job-scheduler (see add-health.sh).
+# Asks the server for ~/jarvis/bin/health and posts an Android notification ONLY on change:
+#   a problem seen on 2 checks in a row → alert;  that problem gone → "OK again".
+# No internet on the phone → stays quiet (no false "server down").
+# Laptop offline is a quiet notification (you turn it off); anything else is a loud one.
+S=~/.cache/jarvis-health; mkdir -p "$S"
+touch "$S/last" "$S/alerted"
+
+notify() {  # notify <id> <title> <text> <priority>
+  termux-notification --id "jarvis-$1" --title "$2" --content "$3" --priority "$4" \
+    --group jarvis-health 2>/dev/null
+}
+
+if out="$(timeout 40 ssh -o BatchMode=yes -o ConnectTimeout=15 jarvis '~/jarvis/bin/health' 2>/dev/null)"; then
+  now="$(grep '^fail ' <<<"$out" | cut -d' ' -f2- )"        # "<check> <detail>" per failure
+else
+  # Server didn't answer. Only an alert if the phone itself is online.
+  ping -c 1 -W 5 1.1.1.1 >/dev/null 2>&1 || exit 0
+  now="server unreachable (the Oracle server is down, or its network is)"
+fi
+
+names() { cut -d' ' -f1 <<<"$1" | sed '/^$/d' | sort -u; }
+cur="$(names "$now")"; prev="$(sort -u "$S/last")"; alerted="$(sort -u "$S/alerted")"
+
+# New problems: failing now AND last time, not yet alerted
+for c in $(comm -12 <(echo "$cur") <(echo "$prev")); do
+  grep -qx "$c" <<<"$alerted" && continue
+  detail="$(grep "^$c " <<<"$now" | head -1 | cut -d' ' -f2-)"
+  [[ "$c" == laptop ]] && prio=low || prio=high
+  notify "$c" "Jarvis: $c problem" "$detail" "$prio"
+  echo "$c" >> "$S/alerted"
+done
+
+# Recovered: alerted before, not failing now
+for c in $(comm -23 <(echo "$alerted") <(echo "$cur")); do
+  notify "$c" "Jarvis: $c OK again" "Back to normal at $(date +%H:%M)" low
+  sed -i "/^$c\$/d" "$S/alerted"
+done
+
+echo "$cur" > "$S/last"
+
+# Reminders that are now within 24 h get their phone alarm (server keeps the list)
+grep -qx server <<<"$cur" || ~/bin/j sync-reminders >/dev/null 2>&1
+
+# Morning brief: once a day, first check from 8:00 (until noon, in case the phone slept through 8)
+BRIEF_HOUR="${JARVIS_BRIEF_HOUR:-8}"
+h=$((10#$(date +%H)))
+if (( h >= BRIEF_HOUR && h < 12 )) && [[ "$(cat "$S/brief" 2>/dev/null)" != "$(date +%F)" ]] \
+   && ! grep -qx server <<<"$cur"; then
+  ~/bin/j brief --notify >/dev/null 2>&1 && date +%F > "$S/brief"
+fi
+
+date '+%F %T' > "$S/checked"
