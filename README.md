@@ -12,7 +12,7 @@ Phone (Termux) ──WireGuard──► Server ──► local models (Dolphin /
 ```
 
 ## What it does
-- **Chat** with a local model (`j "question"`), Qwen (`q:`) or Claude (`c:`)
+- **Chat** with a fast local model by default (Qwen3-4B, `f:`), the bigger Dolphin 8B (`d:`), Qwen3 8B (`q:`) or Claude (`c:`)
 - **Voice**: one-tap home-screen button or `j -v` / `j talk`; speech is recognised offline (Whisper)
 - **Control the laptop**: open/close apps, volume, media, lock, screenshots, websites, notifications
 - **AI plans with confirm-before-run**: "I'm going to sleep" → proposed actions, run only if you answer **y**
@@ -30,7 +30,7 @@ Phone (Termux) ──WireGuard──► Server ──► local models (Dolphin /
 ## Files
 | Path | Runs on | What it is |
 | --- | --- | --- |
-| `jarvis.py` | server | Router: `d:` Dolphin, `q:` Qwen, `c:` Claude |
+| `jarvis.py` | server | Router: `f:` fast (default on the server), `d:` Dolphin, `q:` Qwen, `c:` Claude |
 | `bin/brain.sh` | server | Starts a llamafile model server (systemd `jarvis-brain@<name>`) |
 | `bin/voice`, `bin/intent.py` | server | Speech → text (Whisper) → action, plan, note, reminder or chat |
 | `bin/plan.py` | server | AI proposes allowlisted laptop actions (never runs them) |
@@ -46,8 +46,8 @@ Replace the placeholders as you go: `YOUR_SERVER_PUBLIC_IP`, `YOUR_LAPTOP_USER`,
 
 1. **Server** — clone to `~/jarvis`, run `bash setup/02-brains.sh` (downloads ~10 GB of models), then
    ```
-   printf 'JARVIS_STT_MODEL=tiny.en-q5_1\nJARVIS_NO_MMAP=1\nJARVIS_LAPTOP_USER=YOUR_LAPTOP_USER\n' > ~/jarvis/local.env
-   systemctl --user enable --now jarvis-brain@dolphin
+   printf 'JARVIS_STT_MODEL=tiny.en-q5_1\nJARVIS_NO_MMAP=1\nJARVIS_LAPTOP_USER=YOUR_LAPTOP_USER\nJARVIS_DEFAULT_BRAIN=f\nJARVIS_PLAN_PORT=8082\n' > ~/jarvis/local.env
+   systemctl --user enable --now jarvis-brain@fast jarvis-brain@dolphin
    ```
    Optional: install Claude Code and sign in for the `c:` brain.
 2. **Private network** — WireGuard `10.66.0.0/24`: server `10.66.0.1` (UDP 51820), laptop `10.66.0.2`

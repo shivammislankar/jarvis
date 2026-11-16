@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Jarvis router — picks a brain by prefix.
 
+  f: <text>   fast small model (local; the default on the server)
   d: <text>   Dolphin 3 8B (local)
   q: <text>   Qwen3 8B    (local)
   c: <text>   Claude      (via Claude Code, leaves the machine)
-  <text>      default local brain (Dolphin)
+  <text>      default brain: JARVIS_DEFAULT_BRAIN in ~/jarvis/local.env (f, d or q; else d)
 
-Commands: /reset [d|q|c|all]   /status   /quit
+Commands: /reset [f|d|q|c|all]   /status   /quit
 Usage:    jarvis.py              -> interactive
           jarvis.py "c: hello"   -> one-shot (what the phone calls over SSH)
           echo hi | jarvis.py -  -> read prompt from stdin
@@ -20,11 +21,26 @@ ROOT = Path(__file__).resolve().parent
 STATE = HOME / ".local/state/jarvis"
 STATE.mkdir(parents=True, exist_ok=True)
 
+def _local_env():
+    """KEY=VALUE lines from ~/jarvis/local.env (per-machine settings, not in git)."""
+    env = {}
+    try:
+        for line in (ROOT / "local.env").read_text().splitlines():
+            k, sep, v = line.partition("=")
+            if sep and not k.strip().startswith("#"): env[k.strip()] = v.strip()
+    except FileNotFoundError:
+        pass
+    return env
+CONF = _local_env()
+
+# big = 8B models: only one of them runs at a time (laptop: 4 GB VRAM; server: 11 GB RAM).
+# The small fast model never stops anything and is never stopped.
 LOCAL = {
-    "d": {"name": "dolphin", "port": 8080},
-    "q": {"name": "qwen", "port": 8081},
+    "f": {"name": "fast", "port": 8082, "big": False},
+    "d": {"name": "dolphin", "port": 8080, "big": True},
+    "q": {"name": "qwen", "port": 8081, "big": True},
 }
-DEFAULT = "d"
+DEFAULT = CONF.get("JARVIS_DEFAULT_BRAIN", "d") if CONF.get("JARVIS_DEFAULT_BRAIN", "d") in LOCAL else "d"
 MAX_HISTORY = 20          # messages kept per local brain
 SYSTEM = ("You are Jarvis, a concise personal assistant. Answer directly. "
           "Never claim to have run a command; only suggest them.")
@@ -39,7 +55,7 @@ def load(b):
 def save(b, data): hist_path(b).write_text(json.dumps(data))
 
 def reset(which):
-    for b in (["d", "q", "c"] if which in ("", "all") else [which]):
+    for b in (["f", "d", "q", "c"] if which in ("", "all") else [which]):
         hist_path(b).unlink(missing_ok=True)
     return f"reset: {which or 'all'}"
 
@@ -56,11 +72,11 @@ def healthy(port):
         return False
 
 def ensure_local(b):
-    """Only one 8B fits in 4 GB VRAM: stop the other brain, start this one."""
+    """Start brain b if needed. Starting a big (8B) brain stops the other big one."""
     cfg = LOCAL[b]
     if healthy(cfg["port"]): return
     for other, ocfg in LOCAL.items():
-        if other != b:
+        if other != b and cfg["big"] and ocfg["big"]:
             subprocess.run(["systemctl", "--user", "stop", f"jarvis-brain@{ocfg['name']}"],
                            capture_output=True)
     subprocess.run(["systemctl", "--user", "start", f"jarvis-brain@{cfg['name']}"],
@@ -121,7 +137,7 @@ def route(line):
         if cmd in ("quit", "exit"): sys.exit(0)
         return "commands: /reset [d|q|c|all]  /status  /quit"
     brain, text = DEFAULT, s
-    if len(s) > 2 and s[1] == ":" and s[0].lower() in ("d", "q", "c"):
+    if len(s) > 2 and s[1] == ":" and s[0].lower() in ("f", "d", "q", "c"):
         brain, text = s[0].lower(), s[2:].strip()
     return ask_claude(text) if brain == "c" else ask_local(brain, text)
 

@@ -11,11 +11,19 @@ Guardrails (blueprint: "any command the model proposes → confirm-before-run + 
     reported under "rejected". `close … force` is never proposed.
   * This script only proposes. The phone shows the list and runs it only after you answer y.
 """
-import json, re, sys, urllib.request
+import json, os, re, sys, urllib.request
 from pathlib import Path
 
 STATE = Path.home() / ".local/state/jarvis"
-PORT = 8080                                       # Dolphin
+def _local_env(key, default):
+    try:
+        for line in (Path(__file__).resolve().parent.parent / "local.env").read_text().splitlines():
+            k, sep, v = line.partition("=")
+            if sep and k.strip() == key: return v.strip()
+    except FileNotFoundError: pass
+    return default
+# which local model plans: 8082 = fast (server default via local.env), 8080 = Dolphin
+PORT = int(os.environ.get("JARVIS_PLAN_PORT") or _local_env("JARVIS_PLAN_PORT", "8080"))
 MAX_ACTIONS = 5
 NOARG = ("pause", "play", "next", "prev", "lock", "shot")
 TLD = r"(com|org|net|in|io|dev|ai|co|me|tv|app|edu|gov)"

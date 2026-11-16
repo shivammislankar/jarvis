@@ -29,6 +29,9 @@ dl $HF/bartowski/Dolphin3.0-Llama3.1-8B-GGUF/resolve/$DOLPHIN_REV/Dolphin3.0-Lla
    models/Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf 268390e07edd407ad93ea21a868b7ae995b5950e01cad0db9e1802ae5049d405
 dl $HF/Qwen/Qwen3-8B-GGUF/resolve/$QWEN_REV/Qwen3-8B-Q4_K_M.gguf \
    models/Qwen3-8B-Q4_K_M.gguf d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785
+# Fast default brain: answers ~40% sooner than Dolphin on 2 ARM cores (and got the arithmetic test right)
+dl $HF/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf \
+   models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf 3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597
 # Voice: offline speech recognition (small = accurate on a fast CPU; tiny = for a 2-CPU server)
 dl $GH/whisperfile-0.10.6 bin/whisperfile deafc9e1028b5c4e2431326593c130c25c9990b62336330df63bb14e7e2596f8
 dl $HF/ggerganov/whisper.cpp/resolve/$WHISPER_REV/ggml-small.en-q5_1.bin \

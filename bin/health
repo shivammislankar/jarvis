@@ -9,9 +9,11 @@ line() { printf '%s %s %s\n' "$1" "$2" "$3"; }
 U="${JARVIS_LAPTOP_USER:-}"
 
 # Brain: Dolphin (or Qwen, if you switched to it) answering on localhost
-if curl -sf -m 5 http://127.0.0.1:8080/health >/dev/null; then line ok brain "Dolphin up"
-elif curl -sf -m 5 http://127.0.0.1:8081/health >/dev/null; then line ok brain "Qwen up"
-else line fail brain "no model is running (systemctl --user status jarvis-brain@dolphin)"; fi
+up=""
+for b in fast:8082 Dolphin:8080 Qwen:8081; do
+  curl -sf -m 5 "http://127.0.0.1:${b#*:}/health" >/dev/null && up="$up${up:+, }${b%%:*}"
+done
+[[ -n "$up" ]] && line ok brain "$up up" || line fail brain "no model is running (systemctl --user status 'jarvis-brain@*')"
 
 # Laptop: tunnel listening, and the laptop actually answers through it
 if [[ -z "$U" ]]; then
