@@ -13,7 +13,8 @@ notify() {  # notify <id> <title> <text> <priority>
 }
 
 if out="$(timeout 40 ssh -o BatchMode=yes -o ConnectTimeout=15 jarvis '~/jarvis/bin/health' 2>/dev/null)"; then
-  now="$(grep '^fail ' <<<"$out" | cut -d' ' -f2- )"        # "<check> <detail>" per failure
+  # Only plain lowercase check names are accepted: the server's output is never trusted as code
+  now="$(grep -E '^fail [a-z]+ ' <<<"$out" | cut -d' ' -f2- )"        # "<check> <detail>" per failure
 else
   # Server didn't answer. Only an alert if the phone itself is online.
   ping -c 1 -W 5 1.1.1.1 >/dev/null 2>&1 || exit 0
@@ -25,7 +26,8 @@ cur="$(names "$now")"; prev="$(sort -u "$S/last")"; alerted="$(sort -u "$S/alert
 
 # New problems: failing now AND last time, not yet alerted
 for c in $(comm -12 <(echo "$cur") <(echo "$prev")); do
-  grep -qx "$c" <<<"$alerted" && continue
+  [[ "$c" =~ ^[a-z]+$ ]] || continue
+  grep -qxF "$c" <<<"$alerted" && continue
   detail="$(grep "^$c " <<<"$now" | head -1 | cut -d' ' -f2-)"
   [[ "$c" == laptop ]] && prio=low || prio=high
   notify "$c" "Jarvis: $c problem" "$detail" "$prio"
@@ -34,8 +36,9 @@ done
 
 # Recovered: alerted before, not failing now
 for c in $(comm -23 <(echo "$alerted") <(echo "$cur")); do
+  [[ "$c" =~ ^[a-z]+$ ]] || continue
   notify "$c" "Jarvis: $c OK again" "Back to normal at $(date +%H:%M)" low
-  sed -i "/^$c\$/d" "$S/alerted"
+  grep -vxF "$c" "$S/alerted" > "$S/alerted.tmp"; mv "$S/alerted.tmp" "$S/alerted"
 done
 
 echo "$cur" > "$S/last"

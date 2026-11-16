@@ -11,5 +11,3 @@ setup/*.log
 __pycache__/
 *.pyc
 
-# Personal values for setup/make-public.sh (never commit)
-.public-scrub

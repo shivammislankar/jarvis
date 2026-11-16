@@ -73,6 +73,7 @@ for a in json.loads(sys.argv[1]).get("actions", []): print(" ".join(shlex.quote(
 MEMO='python3 ~/jarvis/bin/memo.py'
 set_alarm() {   # set_alarm <due epoch> <text>  → 0 if the Clock app accepted it
   local due="$1" text="Jarvis: $2" left out
+  [[ "$due" =~ ^[0-9]{9,11}$ ]] || return 1        # a plain epoch only: never arithmetic on server text
   left=$(( due - $(date +%s) ))
   (( left > 5 )) || return 1
   if (( left < 3600 )); then
@@ -91,7 +92,7 @@ set_alarm() {   # set_alarm <due epoch> <text>  → 0 if the Clock app accepted 
 alarm_for() {   # alarm_for <reminder JSON from memo.py remind add> — set + tell the server
   local js="$1" id due text
   read -r id due text < <(python3 -c 'import json,sys; r=json.loads(sys.argv[1]); print(r.get("id",""), r.get("due",0), r.get("text",""))' "$js")
-  [[ -n "$id" ]] || return 0
+  [[ "$id" =~ ^[0-9]+$ && "$due" =~ ^[0-9]{9,11}$ ]] || return 0
   (( due - $(date +%s) < 86400 )) || { echo "(the phone alarm will be set automatically the day before)"; return 0; }
   set_alarm "$due" "$text" && on "$BRAIN" "$MEMO remind ack $id" >/dev/null </dev/null && echo "⏰ alarm set on this phone"
 }
@@ -99,7 +100,7 @@ sync_reminders() {   # set alarms for reminders that just came within 24 h (run 
   local js line id due text
   js="$(on "$BRAIN" "$MEMO remind due" 2>/dev/null </dev/null)" || return 0
   while IFS=$'\t' read -r id due text; do
-    [[ -n "$id" ]] && set_alarm "$due" "$text" && on "$BRAIN" "$MEMO remind ack $id" >/dev/null </dev/null
+    [[ "$id" =~ ^[0-9]+$ ]] && set_alarm "$due" "$text" && on "$BRAIN" "$MEMO remind ack $id" >/dev/null </dev/null
   done < <(python3 -c 'import json,sys
 for r in json.loads(sys.argv[1]).get("items", []): print("%s\t%s\t%s" % (r["id"], r["due"], r["text"]))' "$js")
 }

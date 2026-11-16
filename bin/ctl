@@ -69,6 +69,8 @@ PY
   [[ "$uri" == file://* ]] || die "screenshot failed (screen locked, or a permission prompt is open on the laptop)"
   f="$(python3 -c 'import sys,urllib.parse as u; print(u.unquote(u.urlparse(sys.argv[1]).path))' "$uri")"
   mv -f "$f" "$STATE/shot.png"                       # keep ~/Pictures clean
+  # Never silent: whoever asked (you, or anyone who got into the server), the laptop shows it
+  notify-send -a Jarvis -u normal "📸 Screenshot taken" "A Jarvis screenshot of this screen was sent out" 2>/dev/null || true
   if [[ "${1:-}" == "--stdout" ]]; then cat "$STATE/shot.png"; else echo "$STATE/shot.png"; fi
 }
 
