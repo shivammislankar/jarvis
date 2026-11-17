@@ -13,6 +13,7 @@ Phone (Termux) ──WireGuard──► Server ──► local models (Dolphin /
 
 ## What it does
 - **Chat** with a fast local model by default (Qwen3-4B, `f:`), the bigger Dolphin 8B (`d:`), Qwen3 8B (`q:`) or Claude (`c:`)
+  Each model keeps its own memory; a message with no prefix continues whichever you last used (reverts to the default after ~30 min idle, set by `JARVIS_STICKY_SECONDS`)
 - **Voice**: one-tap home-screen button or `j -v` / `j talk`; speech is recognised offline (Whisper)
 - **Control the laptop**: open/close apps, volume, media, lock, screenshots, websites, notifications
 - **AI plans with confirm-before-run**: "I'm going to sleep" → proposed actions, run only if you answer **y**

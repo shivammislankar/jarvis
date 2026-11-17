@@ -3,7 +3,7 @@
 #   jarvis = Oracle server: AI brains + voice, and it relays laptop actions to the laptop
 #   (the phone has no shell access to the laptop: a lost phone can't open a laptop terminal)
 # Everything works from anywhere (Wi-Fi or mobile data) as long as the laptop is on.
-#   j "hello"            chat (default: fast model; d: dolphin, q: qwen, c: claude)     j  interactive
+#   j "hello"            chat; no prefix continues your last model (f: fast, d: dolphin, q: qwen, c: claude)  j interactive
 #   j -v [secs]          voice, one command: speak, press Enter (or fixed secs) → laptop acts / replies
 #   j talk [secs]        voice conversation: keeps listening until you say "goodbye"
 #   j app firefox | j close firefox | j apps | j lock | j vol 30 | j pause | j shot | j open youtube.com | j say hi | j status

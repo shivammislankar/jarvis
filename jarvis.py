@@ -42,6 +42,11 @@ LOCAL = {
 }
 DEFAULT = CONF.get("JARVIS_DEFAULT_BRAIN", "d") if CONF.get("JARVIS_DEFAULT_BRAIN", "d") in LOCAL else "d"
 MAX_HISTORY = 20          # messages kept per local brain
+# A message with no prefix continues the brain you last talked to, so follow-ups stay with the
+# same model (each brain has its own memory). After this many idle seconds it reverts to DEFAULT,
+# so a fresh question hours later doesn't silently keep using Claude or a slow 8B model.
+STICKY_SECONDS = int(CONF.get("JARVIS_STICKY_SECONDS", "1800"))
+BRAINS = ("f", "d", "q", "c")
 SYSTEM = ("You are Jarvis, a concise personal assistant. Answer directly. "
           "Never claim to have run a command; only suggest them.")
 
@@ -55,9 +60,26 @@ def load(b):
 def save(b, data): hist_path(b).write_text(json.dumps(data))
 
 def reset(which):
-    for b in (["f", "d", "q", "c"] if which in ("", "all") else [which]):
+    for b in (list(BRAINS) if which in ("", "all") else [which]):
         hist_path(b).unlink(missing_ok=True)
+    if which in ("", "all"):
+        (STATE / "last.json").unlink(missing_ok=True)   # also forget which brain was last used
     return f"reset: {which or 'all'}"
+
+# ---------- sticky brain: no-prefix messages continue the last brain used ----------
+def last_brain():
+    """The brain last used, if still within the idle window; else None (→ DEFAULT)."""
+    try:
+        st = json.loads((STATE / "last.json").read_text())
+        if st.get("brain") in BRAINS and time.time() - st.get("at", 0) < STICKY_SECONDS:
+            return st["brain"]
+    except Exception:
+        pass
+    return None
+
+def set_last(b):
+    try: (STATE / "last.json").write_text(json.dumps({"brain": b, "at": int(time.time())}))
+    except Exception: pass
 
 # ---------- local brains ----------
 def api_key():
@@ -135,10 +157,13 @@ def route(line):
             return "\n".join(f"{c['name']}: {'up' if healthy(c['port']) else 'down'}"
                              for c in LOCAL.values())
         if cmd in ("quit", "exit"): sys.exit(0)
-        return "commands: /reset [d|q|c|all]  /status  /quit"
-    brain, text = DEFAULT, s
-    if len(s) > 2 and s[1] == ":" and s[0].lower() in ("f", "d", "q", "c"):
+        return "commands: /reset [f|d|q|c|all]  /status  /quit"
+    # Prefix wins; otherwise continue the last brain (if still recent), else the default.
+    if len(s) > 2 and s[1] == ":" and s[0].lower() in BRAINS:
         brain, text = s[0].lower(), s[2:].strip()
+    else:
+        brain, text = (last_brain() or DEFAULT), s
+    set_last(brain)                                    # keeps the conversation sticky as you go
     return ask_claude(text) if brain == "c" else ask_local(brain, text)
 
 def main():
@@ -148,7 +173,8 @@ def main():
         try: print(route(line) or "")
         except Exception as e: print(f"[error] {e}", file=sys.stderr); sys.exit(1)
         return
-    print("Jarvis online. d: dolphin · q: qwen · c: claude · /status /reset /quit")
+    print("Jarvis online. f: fast · d: dolphin · q: qwen · c: claude (no prefix = continue last) "
+          "· /status /reset /quit")
     while True:
         try: line = input("› ")
         except (EOFError, KeyboardInterrupt): print(); break
