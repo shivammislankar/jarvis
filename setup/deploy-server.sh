@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 rsync -a --relative -e "ssh -o BatchMode=yes" \
-  jarvis.py bin/brain.sh bin/voice bin/intent.py bin/plan.py bin/health bin/memo.py bin/brief \
+  jarvis.py bin/brain.sh bin/voice bin/intent.py bin/plan.py bin/health bin/memo.py bin/brief bin/web.py \
   setup/02-brains.sh phone/j phone/add-server.sh phone/add-widgets.sh phone/add-health.sh phone/jarvis-health phone/use-private-network.sh phone/setup-termux.sh \
   oracle:jarvis/
 # The server's ctl is the relay to the laptop, not the laptop's ctl

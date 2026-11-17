@@ -12,6 +12,7 @@ Phone (Termux) ──WireGuard──► Server ──► local models (Dolphin /
 ```
 
 ## What it does
+- **Browser chat UI**: open `http://10.66.0.1:8088` from your phone or laptop (private network only, token-protected); streams replies, same brains and memory as the phone
 - **Chat** with a fast local model by default (Qwen3-4B, `f:`), the bigger Dolphin 8B (`d:`), Qwen3 8B (`q:`) or Claude (`c:`)
   Each model keeps its own memory; a message with no prefix continues whichever you last used (reverts to the default after ~30 min idle, set by `JARVIS_STICKY_SECONDS`)
 - **Voice**: one-tap home-screen button or `j -v` / `j talk`; speech is recognised offline (Whisper)
@@ -36,6 +37,7 @@ Phone (Termux) ──WireGuard──► Server ──► local models (Dolphin /
 | `bin/voice`, `bin/intent.py` | server | Speech → text (Whisper) → action, plan, note, reminder or chat |
 | `bin/plan.py` | server | AI proposes allowlisted laptop actions (never runs them) |
 | `bin/memo.py`, `bin/brief`, `bin/health` | server | Notes/reminders, morning brief, health checks |
+| `bin/web.py` | server | Browser chat UI on the private network (systemd `jarvis-web`) |
 | `bin/ctl-server` | server (as `bin/ctl`) | Relays laptop actions down the tunnel, logs each one |
 | `bin/ctl`, `bin/apps.py` | laptop | The laptop actions themselves (fixed list) |
 | `bin/ctl-gate` | laptop | Forced command: the server's key can only run `ctl` |
@@ -49,6 +51,7 @@ Replace the placeholders as you go: `YOUR_SERVER_PUBLIC_IP`, `YOUR_LAPTOP_USER`,
    ```
    printf 'JARVIS_STT_MODEL=tiny.en-q5_1\nJARVIS_NO_MMAP=1\nJARVIS_LAPTOP_USER=YOUR_LAPTOP_USER\nJARVIS_DEFAULT_BRAIN=f\nJARVIS_PLAN_PORT=8082\n' > ~/jarvis/local.env
    systemctl --user enable --now jarvis-brain@fast jarvis-brain@dolphin
+   cp setup/systemd/jarvis-web.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now jarvis-web
    ```
    Optional: install Claude Code and sign in for the `c:` brain.
 2. **Private network** — WireGuard `10.66.0.0/24`: server `10.66.0.1` (UDP 51820), laptop `10.66.0.2`

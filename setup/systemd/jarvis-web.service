@@ -1,0 +1,11 @@
+[Unit]
+Description=Jarvis web chat UI (private network only)
+After=network-online.target
+
+[Service]
+ExecStart=%h/jarvis/bin/web.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
