@@ -33,6 +33,7 @@ class Store:
         raw = self.f.read()
         self.d = json.loads(raw) if raw.strip() else {}
         self.d.setdefault("notes", []); self.d.setdefault("reminders", []); self.d.setdefault("next", 1)
+        self.d.setdefault("todos", []); self.d.setdefault("events", [])
         return self.d
 
     def __exit__(self, *exc):
@@ -176,6 +177,43 @@ def main(argv):
                 for r in d["reminders"]:
                     if str(r["id"]) == rest: r["alarm"] = True
                 return {"ok": True}
+        if kind == "todo":                                     # untimed checklist
+            open_todos = [t for t in d["todos"] if not t["done"]]
+            if cmd == "add":
+                if not rest: return {"ok": False, "reply": "Add what to your list?"}
+                d["todos"].append({"id": new_id(d), "text": rest, "done": False, "at": int(now)})
+                return {"ok": True, "reply": f"Added to your list: {rest}."}
+            if cmd == "list":
+                return {"ok": True, "items": [{"n": i + 1, "id": t["id"], "text": t["text"]}
+                                              for i, t in enumerate(open_todos)]}
+            if cmd == "done":
+                try: t = open_todos[int(rest) - 1]
+                except (ValueError, IndexError): return {"ok": False, "reply": f"No item number {rest}."}
+                t["done"] = True
+                d["todos"] = [x for x in d["todos"] if not x["done"] or now - x["at"] < 7 * DAY]  # keep a week
+                return {"ok": True, "reply": f"Done: {t['text']}"}
+            if cmd == "del":
+                try: t = open_todos[int(rest) - 1]
+                except (ValueError, IndexError): return {"ok": False, "reply": f"No item number {rest}."}
+                d["todos"].remove(t)
+                return {"ok": True, "reply": f"Removed: {t['text']}"}
+        if kind == "event":                                    # dated calendar entry (no phone alarm)
+            d["events"] = [e for e in d["events"] if e["at"] > now - DAY]   # drop day-old past events
+            upcoming = sorted([e for e in d["events"] if e["at"] > now], key=lambda e: e["at"])
+            if cmd == "add":
+                try: when, what = parse(rest)
+                except ValueError as e: return {"ok": False, "reply": f"Sorry, {e}."}
+                d["events"].append({"id": new_id(d), "at": when, "text": what})
+                return {"ok": True, "reply": f"Added to your calendar: {what}, {when_words(when)}."}
+            if cmd == "list":
+                return {"ok": True, "items": [{"n": i + 1, "id": e["id"], "text": e["text"],
+                                               "when": when_words(e["at"]), "at": e["at"]}
+                                              for i, e in enumerate(upcoming)]}
+            if cmd == "del":
+                try: e = upcoming[int(rest) - 1]
+                except (ValueError, IndexError): return {"ok": False, "reply": f"No event number {rest}."}
+                d["events"].remove(e)
+                return {"ok": True, "reply": f"Removed: {e['text']} ({when_words(e['at'])})."}
     return {"ok": False, "reply": f"unknown command: {kind} {cmd}"}
 
 
@@ -183,10 +221,12 @@ def human(r):
     """Plain sentences for the phone / text-to-speech (memo.py --text …)."""
     if "items" not in r: return r.get("reply", "")
     its = r["items"]
-    if not its: return "Nothing saved yet."
+    if not its: return "Nothing here."
     if "when" in its[0]:
         return "\n".join(f"{i['n']}. {i['when']}: {i['text']}" for i in its)
-    return "\n".join(f"{i['n']}. {i['text']}  ({i['at']})" for i in its)
+    if "at" in its[0]:                                  # notes carry a date; to-dos don't
+        return "\n".join(f"{i['n']}. {i['text']}  ({i['at']})" for i in its)
+    return "\n".join(f"{i['n']}. {i['text']}" for i in its)
 
 
 if __name__ == "__main__":

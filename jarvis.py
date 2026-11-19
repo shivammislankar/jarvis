@@ -81,6 +81,15 @@ def set_last(b):
     try: (STATE / "last.json").write_text(json.dumps({"brain": b, "at": int(time.time())}))
     except Exception: pass
 
+# ---------- usage log (for the web dashboard): one line per reply ----------
+USAGE = STATE / "usage.jsonl"
+def log_usage(brain, seconds, source):
+    try:
+        with open(USAGE, "a") as f:
+            f.write(json.dumps({"brain": brain, "s": round(seconds, 2), "src": source,
+                                "at": int(time.time())}) + "\n")
+    except Exception: pass
+
 # ---------- local brains ----------
 def api_key():
     try: return (STATE / "api-key").read_text().strip()
@@ -164,7 +173,10 @@ def route(line):
     else:
         brain, text = (last_brain() or DEFAULT), s
     set_last(brain)                                    # keeps the conversation sticky as you go
-    return ask_claude(text) if brain == "c" else ask_local(brain, text)
+    start = time.time()
+    reply = ask_claude(text) if brain == "c" else ask_local(brain, text)
+    log_usage(brain, time.time() - start, "phone")
+    return reply
 
 def main():
     args = sys.argv[1:]

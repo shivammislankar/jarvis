@@ -17,6 +17,7 @@ THREADS="$(nproc)"; (( THREADS > 8 )) && THREADS=8
 HINT="Jarvis voice commands: open Firefox, close the text editor, set the volume to 30 percent, what is the battery, take a screenshot, lock the laptop, pause, next song. Questions about Kerala, India."
 TMP="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/jarvis-voice.XXXXXX")"; trap 'rm -rf "$TMP"' EXIT
 
+HEAR=0; [[ "${1:-}" == "--hear" ]] && { HEAR=1; shift; }   # --hear: transcribe only, don't act
 if [[ "${1:-}" == "--text" ]]; then
   shift; said="$*"
 else
@@ -41,6 +42,7 @@ else
           | sed -E 's/\[[^]]*\]//g; s/\([^)]*\)//g' | tr '\n' ' ' | sed -E 's/^ +| +$//g; s/ +/ /g')"
 fi
 
+if (( HEAR )); then echo "$said"; exit 0; fi          # wake-word loop: just the transcript
 echo "heard: $said"
 if [[ -z "$said" ]]; then echo "kind: none"; echo "I didn't catch that."; exit 0; fi
 
@@ -63,6 +65,12 @@ case "$kind" in
           echo "remind: $r"                                      # phone sets the alarm from this
           python3 -c 'import json,sys; print(json.loads(sys.argv[1])["reply"])' "$r" ;;
   reminders) python3 "$J/bin/memo.py" --text remind list ;;
+  todo)   python3 -c 'import json,sys; print(json.loads(sys.argv[1])["text"])' "$intent" \
+            | xargs -0 python3 "$J/bin/memo.py" --text todo add ;;
+  todos)  echo "Your to-do list:"; python3 "$J/bin/memo.py" --text todo list ;;
+  event)  python3 -c 'import json,sys; print(json.loads(sys.argv[1])["text"])' "$intent" \
+            | xargs -0 python3 "$J/bin/memo.py" --text event add ;;
+  events) echo "Your calendar:"; python3 "$J/bin/memo.py" --text event list ;;
   brief)  "$J/bin/brief" ;;
   shot)   echo "Taking a screenshot." ;;
   bye)    echo "Goodbye." ;;

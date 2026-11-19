@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import jarvis                                          # the router: brains, Claude, SYSTEM, DEFAULT
+import memo                                            # notes / reminders / to-dos / events (same dir)
 
 STATE = jarvis.STATE
 PORT = int(jarvis.CONF.get("JARVIS_WEB_PORT", "8088"))
@@ -152,6 +153,30 @@ def ask_claude(text, convo):
     return out.get("result", "").strip()
 
 
+def usage_stats(days=30):
+    """Aggregate the usage log for the dashboard: per-model counts, avg time, Claude usage."""
+    cutoff = time.time() - days * 86400
+    per = {}; total = 0; by_day = {}
+    try:
+        for line in open(jarvis.USAGE):
+            try: r = json.loads(line)
+            except Exception: continue
+            if r.get("at", 0) < cutoff: continue
+            b = NAMES.get(r.get("brain"), r.get("brain", "?"))
+            d = per.setdefault(b, {"count": 0, "secs": 0.0})
+            d["count"] += 1; d["secs"] += r.get("s", 0); total += 1
+            day = time.strftime("%Y-%m-%d", time.localtime(r["at"]))
+            by_day[day] = by_day.get(day, 0) + 1
+    except FileNotFoundError:
+        pass
+    models = [{"model": b, "count": v["count"], "avg_s": round(v["secs"] / v["count"], 1) if v["count"] else 0}
+              for b, v in sorted(per.items(), key=lambda kv: -kv[1]["count"])]
+    last7 = [{"day": d[5:], "n": by_day.get(d, 0)} for d in
+             [time.strftime("%Y-%m-%d", time.localtime(time.time() - i * 86400)) for i in range(6, -1, -1)]]
+    return {"days": days, "total": total, "claude": per.get("claude", {}).get("count", 0),
+            "models": models, "last7": last7}
+
+
 def pick_brain(text, chosen, convo):
     s = text.strip()
     if len(s) > 2 and s[1] == ":" and s[0].lower() in jarvis.BRAINS:    # prefix wins
@@ -191,18 +216,36 @@ form{display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--line)}.fw
 #t{flex:1;font:inherit;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;resize:none}
 #send{background:var(--accent);color:#fff;border:none;padding:0 16px;font-weight:600;border-radius:10px}#send:disabled{opacity:.5}
 .empty{color:var(--mut);text-align:center;margin-top:60px}
+#search{margin:0 10px 6px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg);font:inherit;width:calc(100% - 20px)}
+.tools{margin:2px 4px}.copy{background:none;border:1px solid var(--line);color:var(--mut);border-radius:6px;font-size:12px;padding:2px 8px;cursor:pointer}
+.bub pre.code{background:var(--side);border:1px solid var(--line);border-radius:8px;padding:8px;overflow:auto;white-space:pre;font-family:ui-monospace,monospace;font-size:13px;margin:6px 0}
+.bub code{background:var(--side);border-radius:4px;padding:1px 4px;font-family:ui-monospace,monospace;font-size:90%}.bub a{color:var(--accent)}
 .gate{margin:auto;max-width:360px;text-align:center;padding:24px}
+#dash{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;z-index:9}
+.dcard{margin:auto;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;max-width:440px;width:92%}
+.dcard h3{margin:0 0 8px}.dcard table{width:100%;border-collapse:collapse}.dcard td,.dcard th{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line);font-size:14px}
+.bars{display:flex;gap:4px;align-items:flex-end;height:54px;margin:12px 0 2px}.bars>div{flex:1;background:var(--accent);border-radius:3px 3px 0 0;min-height:2px}
 @media(max-width:720px){#side{position:fixed;inset:0 40% 0 0;z-index:5;transform:translateX(-100%);transition:.2s}#side.open{transform:none}#burger{display:block}}
 </style></head><body>
-<nav id=side><h1>Jarvis</h1><button id=newc>+ New chat</button><div id=list></div></nav>
+<nav id=side><h1>Jarvis</h1><button id=newc>+ New chat</button><input id=search placeholder="Search chats…"><div id=list></div></nav>
 <div id=main>
 <header><button id=burger>☰</button>
 <select id=brain title="model"><option value=auto>Auto</option><option value=f>Fast</option>
 <option value=d>Dolphin</option><option value=q>Qwen</option><option value=c>Claude</option></select>
-<span id=stat style="color:var(--mut);font-size:13px"></span></header>
+<span id=stat style="color:var(--mut);font-size:13px"></span>
+<button id=listsb title="to-dos & calendar" style="margin-left:auto;background:none;border:none;color:var(--fg);font-size:18px;cursor:pointer">☑</button>
+<button id=statsb title="usage" style="background:none;border:none;color:var(--fg);font-size:18px;cursor:pointer">📊</button></header>
 <div id=log><div class=wrap id=msgs></div></div>
 <form id=f><div class=fwrap><textarea id=t rows=1 placeholder="Message Jarvis…  (prefix f: d: q: c: to pick a model)" autofocus></textarea><button id=send>Send</button></div></form>
 </div>
+<div id=dash><div class=dcard><h3>Usage · last 30 days</h3><div id=dbody></div>
+<p style=text-align:right><button id=dclose style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:7px 14px">Close</button></p></div></div>
+<div id=lists style="position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;z-index:9"><div class=dcard>
+<h3>To-do</h3><div id=todobody></div>
+<div style="display:flex;gap:6px;margin:6px 0 14px"><input id=todoin placeholder="Add a task…" style="flex:1;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)"><button id=todoadd style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:0 12px">Add</button></div>
+<h3>Calendar</h3><div id=evbody></div>
+<div style="display:flex;gap:6px;margin:6px 0 4px"><input id=evin placeholder="e.g. dentist tomorrow at 5pm" style="flex:1;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)"><button id=evadd style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:0 12px">Add</button></div>
+<p style=text-align:right><button id=lclose style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:7px 14px">Close</button></p></div></div>
 <script>
 const $=s=>document.querySelector(s),msgs=$('#msgs'),list=$('#list');
 let tok=localStorage.getItem('jtok')||'',cur=null;
@@ -211,42 +254,78 @@ function gate(){document.body.innerHTML='<div class=gate><p>Enter the Jarvis acc
  '<input id=tk type=password style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg)">'+
  '<p><button onclick="save()">Unlock</button></p></div>';}
 window.save=()=>{tok=document.getElementById('tk').value.trim();localStorage.setItem('jtok',tok);location.reload();};
-function add(who,cls){const d=document.createElement('div');d.className='msg '+cls;
- d.innerHTML='<div><div class=who></div><div class=bub></div></div>';d.querySelector('.who').textContent=who;
- msgs.appendChild(d);$('#log').scrollTop=$('#log').scrollHeight;return d.querySelector('.bub');}
-async function chats(){const r=await fetch('api/chats',{headers:hdr()});if(r.status===401){gate();return;}
+function esc(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function md(s){return s.split('```').map((p,i)=>i%2
+  ? '<pre class=code>'+esc(p.replace(/^[a-z0-9]*\n/i,''))+'</pre>'
+  : esc(p).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>')
+     .replace(/(^|\n)#{1,6} (.+)/g,'$1<b>$2</b>').replace(/(^|\n)\s*[-*] (.+)/g,'$1• $2')
+     .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,'<a href="$2" target=_blank rel=noopener>$1</a>')
+     .replace(/\n/g,'<br>')).join('');}
+function addMsg(who,cls,text,asMd){const d=document.createElement('div');d.className='msg '+cls;
+ d.innerHTML='<div><div class=who></div><div class=bub></div><div class=tools></div></div>';
+ d.querySelector('.who').textContent=who;const bub=d.querySelector('.bub');
+ if(text!=null){if(asMd){bub.innerHTML=md(text);copyBtn(d,text);}else bub.textContent=text;}
+ msgs.appendChild(d);$('#log').scrollTop=$('#log').scrollHeight;return bub;}
+function copyBtn(d,text){const tl=d.querySelector('.tools');tl.innerHTML='<button class=copy>Copy</button>';
+ const b=tl.querySelector('.copy');b.onclick=()=>{navigator.clipboard.writeText(text);b.textContent='Copied';setTimeout(()=>b.textContent='Copy',1200);};}
+async function chats(q){const r=await fetch('api/chats'+(q?'?q='+encodeURIComponent(q):''),{headers:hdr()});if(r.status===401){gate();return;}
  const d=await r.json();list.innerHTML='';
  d.chats.forEach(c=>{const e=document.createElement('div');e.className='ci'+(c.id===cur?' on':'');
-  e.innerHTML='<span class=ti></span><span class=x>✕</span>';e.querySelector('.ti').textContent=c.title;
-  e.querySelector('.ti').onclick=()=>open_(c.id);
+  e.innerHTML='<span class=ti></span><span class=x>✕</span>';const ti=e.querySelector('.ti');ti.textContent=c.title;
+  ti.onclick=()=>open_(c.id);
+  ti.ondblclick=async()=>{const nt=prompt('Rename chat',c.title);if(nt==null)return;
+   await fetch('api/rename',{method:'POST',headers:{...hdr(),'Content-Type':'application/json'},body:JSON.stringify({id:c.id,title:nt})});chats($('#search').value);};
   e.querySelector('.x').onclick=async ev=>{ev.stopPropagation();if(!confirm('Delete this chat?'))return;
    await fetch('api/delete',{method:'POST',headers:{...hdr(),'Content-Type':'application/json'},body:JSON.stringify({id:c.id})});
-   if(cur===c.id){cur=null;msgs.innerHTML='';}chats();};
+   if(cur===c.id){cur=null;msgs.innerHTML='';}chats($('#search').value);};
   list.appendChild(e);});
- $('#stat').textContent='auto-deletes after '+d.days+' days';}
+ $('#stat').textContent='auto-deletes after '+d.days+' days of no use';}
 async function open_(id){cur=id;msgs.innerHTML='';$('#side').classList.remove('open');
  const r=await fetch('api/chat?id='+id,{headers:hdr()});if(!r.ok)return;const d=await r.json();
- d.messages.forEach(m=>add(m.role==='user'?'you':'Jarvis · '+m.brain,m.role==='user'?'me':'').textContent=m.content);
- chats();}
+ d.messages.forEach(m=>addMsg(m.role==='user'?'you':'Jarvis · '+m.brain,m.role==='user'?'me':'',m.content,m.role!=='user'));
+ chats($('#search').value);}
 $('#newc').onclick=()=>{cur=null;msgs.innerHTML='<div class=empty>New chat — say something to begin.</div>';
  document.querySelectorAll('.ci').forEach(e=>e.classList.remove('on'));$('#side').classList.remove('open');};
 $('#burger').onclick=()=>$('#side').classList.toggle('open');
+$('#statsb').onclick=async()=>{const r=await fetch('api/stats',{headers:hdr()});if(!r.ok)return;const d=await r.json();
+ let h='<p>'+d.total+' replies · '+d.claude+' via Claude.</p><table><tr><th>Model</th><th>Replies</th><th>Avg time</th></tr>';
+ d.models.forEach(m=>h+='<tr><td>'+m.model+'</td><td>'+m.count+'</td><td>'+m.avg_s+'s</td></tr>');
+ if(!d.models.length)h+='<tr><td colspan=3 style=color:var(--mut)>No replies yet.</td></tr>';
+ h+='</table>';const mx=Math.max(1,...d.last7.map(x=>x.n));
+ h+='<div class=bars>'+d.last7.map(x=>'<div style="height:'+(x.n/mx*100)+'%" title="'+x.day+': '+x.n+'"></div>').join('')+'</div>';
+ h+='<div style="display:flex;gap:4px">'+d.last7.map(x=>'<span style="flex:1;text-align:center;font-size:10px;color:var(--mut)">'+x.day+'</span>').join('')+'</div>';
+ $('#dbody').innerHTML=h;$('#dash').style.display='flex';};
+$('#dclose').onclick=()=>$('#dash').style.display='none';
+$('#dash').onclick=e=>{if(e.target.id==='dash')$('#dash').style.display='none';};
+async function lists(){const r=await fetch('api/lists',{headers:hdr()});if(!r.ok)return;const d=await r.json();
+ $('#todobody').innerHTML=d.todos.length?d.todos.map(t=>'<label style="display:flex;gap:8px;padding:3px 0;align-items:center"><input type=checkbox data-n='+t.n+'><span>'+esc(t.text)+'</span></label>').join(''):'<p style=color:var(--mut)>No tasks.</p>';
+ $('#evbody').innerHTML=d.events.length?d.events.map(e=>'<div style="display:flex;justify-content:space-between;padding:3px 0"><span>'+esc(e.text)+'</span><span style=color:var(--mut)>'+esc(e.when)+'</span></div>').join(''):'<p style=color:var(--mut)>Nothing upcoming.</p>';
+ $('#todobody').querySelectorAll('input').forEach(c=>c.onchange=async()=>{await fetch('api/list',{method:'POST',headers:{...hdr(),'Content-Type':'application/json'},body:JSON.stringify({kind:'todo',cmd:'done',arg:c.dataset.n})});lists();});}
+async function addItem(kind,inp){const v=inp.value.trim();if(!v)return;inp.value='';
+ await fetch('api/list',{method:'POST',headers:{...hdr(),'Content-Type':'application/json'},body:JSON.stringify({kind,cmd:'add',arg:v})});lists();}
+$('#listsb').onclick=()=>{lists();$('#lists').style.display='flex';};
+$('#lclose').onclick=()=>$('#lists').style.display='none';
+$('#lists').onclick=e=>{if(e.target.id==='lists')$('#lists').style.display='none';};
+$('#todoadd').onclick=()=>addItem('todo',$('#todoin'));$('#todoin').addEventListener('keydown',e=>{if(e.key==='Enter')addItem('todo',$('#todoin'));});
+$('#evadd').onclick=()=>addItem('event',$('#evin'));$('#evin').addEventListener('keydown',e=>{if(e.key==='Enter')addItem('event',$('#evin'));});
+let sTimer;$('#search').addEventListener('input',e=>{clearTimeout(sTimer);sTimer=setTimeout(()=>chats(e.target.value),200);});
 const t=$('#t');t.addEventListener('input',()=>{t.style.height='auto';t.style.height=Math.min(t.scrollHeight,160)+'px';});
 t.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('#f').requestSubmit();}});
 $('#f').onsubmit=async e=>{e.preventDefault();const msg=t.value.trim();if(!msg)return;
  if(msgs.querySelector('.empty'))msgs.innerHTML='';
- t.value='';t.style.height='auto';add('you','me').textContent=msg;$('#send').disabled=true;
- const bub=add('Jarvis','');
+ t.value='';t.style.height='auto';addMsg('you','me',msg,false);$('#send').disabled=true;
+ const bub=addMsg('Jarvis','');let buf='';
  try{const r=await fetch('api/send',{method:'POST',headers:{...hdr(),'Content-Type':'application/json'},
    body:JSON.stringify({id:cur,text:msg,brain:$('#brain').value})});
   if(r.status===401){gate();return;}
-  const rd=r.body.getReader(),dec=new TextDecoder();let buf='',meta=null;
+  const rd=r.body.getReader(),dec=new TextDecoder();let meta=null;
   while(true){const{done,value}=await rd.read();if(done)break;buf+=dec.decode(value,{stream:true});
    if(meta===null){const i=buf.indexOf('\n');if(i<0)continue;meta=JSON.parse(buf.slice(0,i));buf=buf.slice(i+1);
-    cur=meta.id;bub.parentNode.querySelector('.who').textContent='Jarvis · '+meta.brain;}
+    cur=meta.id;bub.closest('.msg').querySelector('.who').textContent='Jarvis · '+meta.brain;}
    bub.textContent=buf;$('#log').scrollTop=$('#log').scrollHeight;}
+  bub.innerHTML=md(buf);copyBtn(bub.closest('.msg'),buf);          // render markdown + copy when done
  }catch(err){bub.textContent='⚠ '+err;}
- $('#send').disabled=false;chats();t.focus();};
+ $('#send').disabled=false;chats($('#search').value);t.focus();};
 if(!tok)gate();else{chats().then(()=>{fetch('api/chats',{headers:hdr()}).then(r=>r.json()).then(d=>{if(d.chats[0])open_(d.chats[0].id);else $('#newc').click();});});}
 </script></body></html>"""
 
@@ -275,7 +354,26 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
         if not self._auth(): self.send_error(401); return
         if path == "/api/chats":
-            with LOCK: self._json({"chats": list_chats(), "days": CHAT_DAYS}); return
+            q = dict(p.split("=", 1) for p in qs.split("&") if "=" in p).get("q", "")
+            from urllib.parse import unquote_plus
+            q = unquote_plus(q).strip().lower()
+            with LOCK:
+                items = list_chats()
+                if q:                                       # search title AND message text
+                    hits = []
+                    for it in items:
+                        c = load_chat(it["id"])
+                        if c and (q in it["title"].lower() or
+                                  any(q in m["content"].lower() for m in c["messages"])):
+                            hits.append(it)
+                    items = hits
+                self._json({"chats": items, "days": CHAT_DAYS})
+            return
+        if path == "/api/stats":
+            self._json(usage_stats()); return
+        if path == "/api/lists":
+            self._json({"todos": memo.main(["todo", "list"]).get("items", []),
+                        "events": memo.main(["event", "list"]).get("items", [])}); return
         if path == "/api/chat":
             cid = dict(p.split("=", 1) for p in qs.split("&") if "=" in p).get("id", "")
             with LOCK:
@@ -300,6 +398,11 @@ class H(BaseHTTPRequestHandler):
                 try: cpath(c["id"]).unlink()
                 except Exception: pass
             self.send_response(204); self.end_headers(); return
+        if path == "/api/list":
+            k, cmd, arg = data.get("kind"), data.get("cmd"), str(data.get("arg", ""))
+            if k in ("todo", "event") and cmd in ("add", "done", "del"):
+                self._json(memo.main([k, cmd, arg])); return
+            self.send_error(400); return
         if path == "/api/rename":
             with LOCK:
                 c = load_chat(data.get("id", ""))
@@ -326,7 +429,7 @@ class H(BaseHTTPRequestHandler):
             b = s.encode() if isinstance(s, str) else s
             if b: self.wfile.write(f"{len(b):X}\r\n".encode() + b + b"\r\n"); self.wfile.flush()
         chunk(json.dumps({"brain": NAMES[brain], "id": convo["id"], "title": convo["title"]}) + "\n")
-        full = ""
+        full = ""; _t0 = time.time()
         try:
             if brain in ("f", "d"):
                 for piece in stream_local(brain, convo):
@@ -339,6 +442,7 @@ class H(BaseHTTPRequestHandler):
             full = f"[error] {e}";
             try: chunk("\n" + full)
             except Exception: pass
+        jarvis.log_usage(brain, time.time() - _t0, "web")
         with LOCK:                                      # re-load in case it changed, append reply
             c = load_chat(convo["id"]) or convo
             c["messages"].append({"role": "assistant", "content": full, "b": brain, "at": int(time.time())})

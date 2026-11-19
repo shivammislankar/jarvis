@@ -32,6 +32,27 @@ else:
         lines.append(f"{len(week)} more this week, next: {week[0]['text']} on "
                      f"{datetime.fromtimestamp(week[0]['due']).strftime('%A')}.")
 
+# Calendar: today's events
+try:
+    evs = json.loads(subprocess.run(["python3", str(J / "bin/memo.py"), "event", "list"],
+                                    capture_output=True, text=True, timeout=20).stdout)["items"]
+    end_today = now.replace(hour=23, minute=59, second=59)
+    ev_today = [e for e in evs if datetime.fromtimestamp(e["at"]) <= end_today]
+    if ev_today:
+        lines.append("Calendar: " + "; ".join(
+            f"{datetime.fromtimestamp(e['at']).strftime('%-I:%M %p')} {e['text']}" for e in ev_today) + ".")
+except Exception:
+    pass
+
+# To-do: how many open items
+try:
+    todos = json.loads(subprocess.run(["python3", str(J / "bin/memo.py"), "todo", "list"],
+                                      capture_output=True, text=True, timeout=20).stdout)["items"]
+    if todos:
+        lines.append(f"To-do: {len(todos)} item{'s' if len(todos) != 1 else ''} open, including “{todos[0]['text']}”.")
+except Exception:
+    pass
+
 # Jarvis status: one line if all is well, details only for problems
 try:
     out = subprocess.run([str(J / "bin/health")], capture_output=True, text=True, timeout=60).stdout.splitlines()

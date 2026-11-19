@@ -65,6 +65,17 @@ def parse(said):
     if m and not s.startswith(("remember when", "remember what")):
         return {"kind": "note", "text": m.group(1).strip().rstrip(".")}
 
+    # to-do list
+    m = re.match(r"(?:(?:hey |ok |okay )?jarvis[, ]*)?(?:please )?add (.+?) to my (?:to-?do ?list|list|tasks)$", said.strip(), flags=re.I)
+    if m: return {"kind": "todo", "text": m.group(1).strip().rstrip(".")}
+    if re.fullmatch(r"(what('s| is) on )?my (to-?do ?list|list|tasks)|(show|list|read)( me)? my (to-?do ?list|list|tasks)", s):
+        return {"kind": "todos"}
+    # calendar / events
+    m = re.match(r"(?:(?:hey |ok |okay )?jarvis[, ]*)?(?:please )?add (?:an? )?(?:event|appointment|meeting)[ :,]+(.+)", said.strip(), flags=re.I)
+    if m: return {"kind": "event", "text": m.group(1).strip()}
+    if re.fullmatch(r"(what('s| is) on )?my (calendar|schedule|events|agenda)|(show|list|read)( me)? my (calendar|schedule|events)|what('s| is) (coming up|on (today|this week))", s):
+        return {"kind": "events"}
+
     # multi-step requests → the planner proposes actions; the phone asks before running any
     m = re.fullmatch(r"(do(?! (you|i|we|they|it|he|she|not)\b)|plan|handle|set (things )?up for|get (the laptop |it |things )?ready for)[ :,]+(.+)", s)
     if m: return {"kind": "plan", "text": m.group(0) if m.group(1).startswith(("set", "get")) else m.group(m.lastindex)}

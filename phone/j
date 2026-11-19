@@ -11,6 +11,10 @@
 #                        (voice: "do …", "set up for …", "get ready for …")
 #   j note "…" | j notes [word] | j forget N         notes kept on the server
 #   j remind "at 6 pm to call mom" | j reminders | j unremind N   → rings via the phone's Clock app
+#   j todo "buy milk" | j todos | j todo done N      to-do list (on the server)
+#   j event "dentist tomorrow 5pm" | j events        calendar (view-only, no alarm)
+#   j wake [secs]        hands-free: keeps listening; acts only when you start with "Jarvis …"
+#   j voices             list TTS voices; set a nicer one (RHVoice) in ~/.jarvis-tts
 #   j brief              morning brief (also arrives ~8 AM as a notification with "Read aloud")
 #   j health             server, brain, laptop tunnel, disk, memory (background checks: add-health.sh)
 #   j srv                terminal on the server
@@ -105,7 +109,15 @@ sync_reminders() {   # set alarms for reminders that just came within 24 h (run 
 for r in json.loads(sys.argv[1]).get("items", []): print("%s\t%s\t%s" % (r["id"], r["due"], r["text"]))' "$js")
 }
 
-speak() { [[ "${JARVIS_TTS:-1}" == 1 && -n "$1" ]] && timeout 120 termux-tts-speak "$1" 2>/dev/null; }
+speak() {   # reads ~/.jarvis-tts (TTS_ENGINE=…  TTS_RATE=…  TTS_PITCH=…) if present, e.g. RHVoice
+  [[ "${JARVIS_TTS:-1}" == 1 && -n "$1" ]] || return 0
+  local opt=()
+  [[ -f ~/.jarvis-tts ]] && { . ~/.jarvis-tts
+    [[ -n "${TTS_ENGINE:-}" ]] && opt+=(-e "$TTS_ENGINE")
+    [[ -n "${TTS_RATE:-}" ]]   && opt+=(-r "$TTS_RATE")
+    [[ -n "${TTS_PITCH:-}" ]]  && opt+=(-p "$TTS_PITCH"); }
+  timeout 120 termux-tts-speak "${opt[@]}" "$1" 2>/dev/null
+}
 
 record() {   # $1 = seconds (optional). Empty = until Enter.
   rm -f "$REC"
@@ -147,6 +159,29 @@ case "${1:-}" in
   -v)   voice_once "${2:-}" ;;
   talk) echo "Voice mode — say \"goodbye\" to stop (Ctrl-C to quit)."
         while :; do voice_once "${2:-}"; [[ $? -eq 2 ]] && break; echo; done ;;
+  wake) secs="${2:-5}"
+        echo "Wake word on — say \"Jarvis …\" then your request. Ctrl-C to stop. (Battery-heavy; best on charge.)"
+        while :; do
+          rm -f "$REC"; termux-microphone-record -q >/dev/null 2>&1
+          termux-microphone-record -f "$REC" -l "$secs" >/dev/null 2>&1 || { echo "[microphone unavailable]"; break; }
+          sleep "$secs"; termux-microphone-record -q >/dev/null 2>&1; sleep 0.4
+          [[ -s "$REC" ]] || continue
+          heard="$(on "$BRAIN" '~/jarvis/bin/voice --hear' < "$REC" 2>/dev/null)" || continue
+          low="$(printf '%s' "$heard" | tr 'A-Z' 'a-z')"
+          [[ "$low" == jarvis* || "$low" == "hey jarvis"* || "$low" == "ok jarvis"* || "$low" == "okay jarvis"* ]] || continue
+          termux-vibrate -d 60 2>/dev/null; echo "› $heard"
+          out="$(on "$BRAIN" "~/jarvis/bin/voice --text $(q "$heard")")" || continue
+          kind="$(sed -n 's/^kind: //p' <<<"$out" | head -1)"
+          reply="$(sed '1,2d' <<<"$out" | grep -v '^remind: ')"
+          [[ "$kind" == remind ]] && alarm_for "$(sed -n 's/^remind: //p' <<<"$out" | head -1)"
+          if [[ "$kind" == plan ]]; then run_plan "$(sed -n 's/^plan: //p' <<<"$out" | head -1)"; continue; fi
+          [[ "$kind" == shot ]] && shot
+          echo "$reply"; speak "$reply"
+        done ;;
+  voices) echo "TTS engines on this phone:"; termux-tts-engines 2>/dev/null | sed 's/^/  /'
+        echo; [[ -f ~/.jarvis-tts ]] && { echo "Current ~/.jarvis-tts:"; sed 's/^/  /' ~/.jarvis-tts; } \
+          || echo "No ~/.jarvis-tts set (using the phone's default voice)."
+        echo "To use a better voice: install RHVoice (F-Droid), then put e.g. TTS_ENGINE=com.github.olga_yakovleva.rhvoice.android in ~/.jarvis-tts" ;;
   shot|screenshot) shot ;;
   note)      shift; on "$BRAIN" "$MEMO --text note add $(q "$*")" ;;
   notes)     shift; on "$BRAIN" "$MEMO --text note list $(q "$*")" ;;
@@ -155,6 +190,15 @@ case "${1:-}" in
              python3 -c 'import json,sys; print(json.loads(sys.argv[1])["reply"])' "$r"; alarm_for "$r" ;;
   reminders) on "$BRAIN" "$MEMO --text remind list" ;;
   unremind)  shift; on "$BRAIN" "$MEMO --text remind del $(q "${1:-}")" ;;
+  todo)      shift
+             case "${1:-}" in
+               done|del) sub="$1"; shift; on "$BRAIN" "$MEMO --text todo $sub $(q "${1:-}")" ;;
+               "") on "$BRAIN" "$MEMO --text todo list" ;;
+               *)  on "$BRAIN" "$MEMO --text todo add $(q "$*")" ;;
+             esac ;;
+  todos)     on "$BRAIN" "$MEMO --text todo list" ;;
+  event)     shift; on "$BRAIN" "$MEMO --text event add $(q "$*")" ;;
+  events|cal) on "$BRAIN" "$MEMO --text event list" ;;
   sync-reminders) sync_reminders ;;
   brief)     b="$(on "$BRAIN" '~/jarvis/bin/brief' </dev/null)" || exit 1
              case "${2:-}" in
