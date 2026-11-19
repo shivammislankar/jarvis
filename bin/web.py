@@ -65,7 +65,8 @@ def list_chats():
     for f in CHATS.glob("*.json"):
         try: c = json.loads(f.read_text())
         except Exception: continue
-        if c.get("updated", 0) < cutoff:
+        # last interaction = the later of last message (updated) and last opened (seen)
+        if max(c.get("updated", 0), c.get("seen", 0)) < cutoff:
             try: f.unlink()
             except Exception: pass
             continue
@@ -75,7 +76,7 @@ def list_chats():
 
 def new_chat():
     c = {"id": secrets.token_hex(8), "title": "New chat",
-         "created": int(time.time()), "updated": int(time.time()),
+         "created": int(time.time()), "updated": int(time.time()), "seen": int(time.time()),
          "claude_session": None, "messages": []}
     save_chat(c)
     return c
@@ -277,8 +278,10 @@ class H(BaseHTTPRequestHandler):
             with LOCK: self._json({"chats": list_chats(), "days": CHAT_DAYS}); return
         if path == "/api/chat":
             cid = dict(p.split("=", 1) for p in qs.split("&") if "=" in p).get("id", "")
-            c = load_chat(cid)
-            if not c: self.send_error(404); return
+            with LOCK:
+                c = load_chat(cid)
+                if not c: self.send_error(404); return
+                c["seen"] = int(time.time()); save_chat(c)      # opening a chat counts as interaction
             self._json({"id": c["id"], "title": c["title"],
                         "messages": [{"role": m["role"], "content": m["content"],
                                       "brain": NAMES.get(m.get("b"), "")} for m in c["messages"]]}); return
@@ -339,7 +342,7 @@ class H(BaseHTTPRequestHandler):
         with LOCK:                                      # re-load in case it changed, append reply
             c = load_chat(convo["id"]) or convo
             c["messages"].append({"role": "assistant", "content": full, "b": brain, "at": int(time.time())})
-            c["updated"] = int(time.time())
+            c["updated"] = c["seen"] = int(time.time())
             if convo.get("claude_session"): c["claude_session"] = convo["claude_session"]
             save_chat(c)
         try: self.wfile.write(b"0\r\n\r\n"); self.wfile.flush()
