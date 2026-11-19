@@ -12,7 +12,7 @@ Phone (Termux) ──WireGuard──► Server ──► local models (Dolphin /
 ```
 
 ## What it does
-- **Browser chat UI**: open `http://10.66.0.1:8088` from your phone or laptop (private network only, token-protected); streams replies, same brains and memory as the phone; the conversation is saved and shown on every visit, and auto-deleted after 45 days (`JARVIS_CHAT_DAYS`)
+- **Browser chat UI**: open `http://10.66.0.1:8088` from your phone or laptop (private network only, token-protected); streams replies, same brains and memory as the phone. Separate conversations with a ChatGPT-style sidebar (create, switch, rename, delete), each with its own memory; a conversation unused for 45 days is auto-deleted (`JARVIS_CHAT_DAYS`)
 - **Chat** with a fast local model by default (Qwen3-4B, `f:`), the bigger Dolphin 8B (`d:`), Qwen3 8B (`q:`) or Claude (`c:`)
   Each model keeps its own memory; a message with no prefix continues whichever you last used (reverts to the default after ~30 min idle, set by `JARVIS_STICKY_SECONDS`)
 - **Voice**: one-tap home-screen button or `j -v` / `j talk`; speech is recognised offline (Whisper)
