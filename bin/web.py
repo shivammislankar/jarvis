@@ -21,6 +21,30 @@ STATE = jarvis.STATE
 PORT = int(jarvis.CONF.get("JARVIS_WEB_PORT", "8088"))
 WG_IP = jarvis.CONF.get("JARVIS_WG_IP", "10.66.0.1")   # the private-network address to serve on
 TOKEN_FILE = STATE / "web-token"
+# Visible chat log the web page shows on every visit (separate from the model's short working
+# memory). Kept for CHAT_DAYS days, then each old turn is pruned automatically.
+TRANSCRIPT = STATE / "web-chat.json"
+CHAT_DAYS = int(jarvis.CONF.get("JARVIS_CHAT_DAYS", "45"))
+_tlock = __import__("threading").Lock()
+
+
+def load_transcript():
+    try: turns = json.loads(TRANSCRIPT.read_text()).get("turns", [])
+    except Exception: turns = []
+    cutoff = time.time() - CHAT_DAYS * 86400
+    kept = [t for t in turns if t.get("at", 0) >= cutoff]
+    if len(kept) != len(turns):
+        try: TRANSCRIPT.write_text(json.dumps({"turns": kept}))
+        except Exception: pass
+    return kept
+
+
+def add_turn(role, content, brain):
+    with _tlock:
+        turns = load_transcript()
+        turns.append({"role": role, "content": content, "brain": brain, "at": int(time.time())})
+        try: TRANSCRIPT.write_text(json.dumps({"turns": turns}))
+        except Exception: pass
 
 
 def token():
@@ -94,7 +118,7 @@ form{display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--line);max
 <select id=brain title="which model">
 <option value=auto>Auto (last used)</option><option value=f>Fast</option>
 <option value=d>Dolphin</option><option value=q>Qwen</option><option value=c>Claude</option></select>
-<button id=new type=button>New chat</button><span class=hint id=stat></span></header>
+<button id=new type=button title="delete this chat history now">Clear</button><span class=hint id=stat></span></header>
 <div id=log></div>
 <form id=f><textarea id=t rows=1 placeholder="Message Jarvis…  (prefix f: d: q: c: to pick a model)" autofocus></textarea><button id=send>Send</button></form>
 <script>
@@ -103,13 +127,20 @@ let tok=localStorage.getItem('jtok')||'';
 function gate(){log.innerHTML='<div class=gate><p>Enter the Jarvis access token.</p>'+
  '<input id=tk type=password style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg)">'+
  '<p><button onclick="save()">Unlock</button></p></div>';}
-window.save=()=>{tok=$('#tk').value.trim();localStorage.setItem('jtok',tok);log.innerHTML='';};
+window.save=()=>{tok=$('#tk').value.trim();localStorage.setItem('jtok',tok);log.innerHTML='';loadHistory();};
 function add(who,cls){const d=document.createElement('div');d.className='msg '+cls;
  d.innerHTML='<div><div class=who></div><div class=bub></div></div>';
  d.querySelector('.who').textContent=who;log.appendChild(d);log.scrollTop=log.scrollHeight;return d.querySelector('.bub');}
+function loadHistory(){fetch('api/history',{headers:{Authorization:'Bearer '+tok}})
+ .then(r=>{if(r.status===401){gate();return null;}return r.json();})
+ .then(d=>{if(!d)return;log.innerHTML='';for(const t of d.turns){
+   add(t.role==='user'?'you':'Jarvis · '+t.brain, t.role==='user'?'me':'').textContent=t.content;}
+  $('#stat').textContent=d.turns.length?('kept '+d.days+' days'):'';log.scrollTop=log.scrollHeight;})
+ .catch(()=>{});}
 const t=$('#t');t.addEventListener('input',()=>{t.style.height='auto';t.style.height=Math.min(t.scrollHeight,160)+'px';});
 t.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('#f').requestSubmit();}});
-$('#new').onclick=async()=>{await fetch('api/reset',{method:'POST',headers:{Authorization:'Bearer '+tok}});log.innerHTML='';};
+$('#new').onclick=async()=>{if(!confirm('Delete this chat history now?'))return;
+ await fetch('api/reset',{method:'POST',headers:{Authorization:'Bearer '+tok}});log.innerHTML='';$('#stat').textContent='';};
 $('#f').onsubmit=async e=>{e.preventDefault();const msg=t.value.trim();if(!msg)return;
  t.value='';t.style.height='auto';add('you','me').textContent=msg;
  $('#send').disabled=true;$('#stat').textContent='…';
@@ -126,7 +157,7 @@ $('#f').onsubmit=async e=>{e.preventDefault();const msg=t.value.trim();if(!msg)r
   if(meta&&meta.err)bub.textContent='⚠ '+buf;
  }catch(err){bub.textContent='⚠ '+err;}
  $('#send').disabled=false;$('#stat').textContent='';t.focus();};
-if(!tok)gate();
+if(!tok)gate();else loadHistory();
 </script></body></html>"""
 
 NAMES = {"f": "fast", "d": "dolphin", "q": "qwen", "c": "claude"}
@@ -144,9 +175,18 @@ class H(BaseHTTPRequestHandler):
         got = self.headers.get("Authorization", "")[7:] if self.headers.get("Authorization", "").startswith("Bearer ") else ""
         return hmac.compare_digest(got, token())
 
+    def _json(self, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
     def do_GET(self):
         if not self._private(): self.send_error(403); return
-        if self.path.split("?")[0] != "/":
+        path = self.path.split("?")[0]
+        if path == "/api/history":                          # past messages, to render on page load
+            if not self._auth(): self.send_error(401); return
+            self._json({"turns": load_transcript(), "days": CHAT_DAYS}); return
+        if path != "/":
             self.send_error(404); return
         body = PAGE.encode()
         self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -159,7 +199,9 @@ class H(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", 0))
         data = json.loads(self.rfile.read(n) or b"{}") if n else {}
         if path == "/api/reset":
-            jarvis.reset("all")
+            jarvis.reset("all")                             # forget model memory
+            try: TRANSCRIPT.unlink(missing_ok=True)         # and clear the visible log
+            except Exception: pass
             self.send_response(204); self.end_headers(); return
         if path != "/api/chat":
             self.send_error(404); return
@@ -178,15 +220,20 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(f"{len(b):X}\r\n".encode() + b + b"\r\n"); self.wfile.flush()
 
         chunk(json.dumps({"brain": NAMES[brain]}) + "\n")   # first line = metadata
+        add_turn("user", msg, NAMES[brain])
+        full = ""
         try:
             if brain in ("f", "d"):                         # stream token by token
                 for piece in stream_local(brain, msg):
-                    chunk(piece)
+                    full += piece; chunk(piece)
             else:                                           # qwen (strip reasoning) / claude: whole
-                chunk(jarvis.ask_claude(msg) if brain == "c" else jarvis.ask_local(brain, msg))
+                full = jarvis.ask_claude(msg) if brain == "c" else jarvis.ask_local(brain, msg)
+                chunk(full)
         except Exception as e:
-            try: chunk(f"\n[error] {e}")
+            full = f"[error] {e}"
+            try: chunk("\n" + full)
             except Exception: pass
+        add_turn("assistant", full, NAMES[brain])           # persist the reply for next visit
         try: self.wfile.write(b"0\r\n\r\n"); self.wfile.flush()   # terminating chunk
         except Exception: pass
 
